@@ -1,17 +1,21 @@
 """
 SecureIAM API — application entry point.
 
-This module only builds the ASGI app object. Routers, database wiring,
-and settings are added in later Phase 1 commits as those layers are built.
+Routers are registered here; the app object itself stays free of any
+business logic, database, or security code.
 """
 
 from fastapi import FastAPI
+
+from app.api.v1.auth import router as auth_router
 
 app = FastAPI(
     title="SecureIAM",
     description="Identity and Access Management platform — Phase 1 (Authentication)",
     version="0.1.0",
 )
+
+app.include_router(auth_router)
 
 
 @app.get("/health", tags=["health"])
