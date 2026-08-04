@@ -10,6 +10,7 @@ callable and testable in isolation.
 import hashlib
 import secrets
 import uuid
+from datetime import timedelta
 
 import jwt
 from argon2 import PasswordHasher
@@ -127,3 +128,23 @@ def hash_refresh_token(token: str) -> str:
     lookup with no corresponding security benefit.
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def access_token_ttl_seconds() -> int:
+    """Returns the configured access token TTL in seconds.
+
+    Exists so AuthService (and later the API layer) can report expires_in
+    without reading Settings/environment variables directly — AuthService
+    is only permitted to call security.py functions, not access
+    configuration itself.
+    """
+    return settings.access_token_ttl_minutes * 60
+
+
+def refresh_token_expiry():
+    """Returns the expiry timestamp a newly-issued refresh token should use,
+    based on the configured TTL. Same rationale as access_token_ttl_seconds():
+    keeps configuration access inside the security/config layer, not the
+    service layer.
+    """
+    return utc_now() + timedelta(days=settings.refresh_token_ttl_days)
