@@ -10,6 +10,7 @@ import os
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Defaults to the docker-compose.test.yml port (5433). Overridable via env var
@@ -31,7 +32,21 @@ async def test_engine():
 
 @pytest_asyncio.fixture
 async def test_session(test_engine) -> AsyncSession:
-    """A single async session against the test database for a test to use directly."""
+    """A single async session against the test database for a test to use directly.
+
+    Truncates the domain tables (if present) before yielding, so tests that
+    commit real rows (e.g. creating a User) are idempotent across repeated
+    runs instead of failing on stale data from a previous run. TRUNCATE ...
+    CASCADE handles the users -> refresh_tokens FK relationship in one
+    statement. Wrapped in a try/except so this fixture still works for
+    modules (like test_db_session.py) run before any migration has created
+    these tables.
+    """
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with session_factory() as session:
+        try:
+            await session.execute(text("TRUNCATE TABLE refresh_tokens, users CASCADE"))
+            await session.commit()
+        except Exception:
+            await session.rollback()
         yield session
