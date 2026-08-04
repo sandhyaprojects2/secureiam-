@@ -1,0 +1,30 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Virtual environments
+.venv/
+venv/
+
+# Alembic
+app/db/migrations/versions/__pycache__/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Docker
+*.pid

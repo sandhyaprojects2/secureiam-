@@ -1,0 +1,25 @@
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Settings / config
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# Database (async)
+sqlalchemy==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# Security
+argon2-cffi==23.1.0
+pyjwt==2.10.1
+
+# Utilities
+python-dotenv==1.0.1
+
+# --- test dependencies (kept in the same file for a single-image build;
+#     a multi-stage Dockerfile installs only prod deps for the runtime image) ---
+pytest==8.3.4
+pytest-asyncio==0.25.2
+httpx==0.28.1

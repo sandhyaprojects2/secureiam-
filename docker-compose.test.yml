@@ -1,0 +1,15 @@
+services:
+  test-db:
+    image: postgres:16-alpine
+    restart: "no"
+    environment:
+      POSTGRES_USER: secureiam_test
+      POSTGRES_PASSWORD: secureiam_test
+      POSTGRES_DB: secureiam_test
+    ports:
+      - "5433:5432"   # different host port so it can run alongside the dev db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U secureiam_test -d secureiam_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
