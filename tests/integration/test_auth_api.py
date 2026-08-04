@@ -3,42 +3,14 @@ Integration tests for /v1/auth/* -- real Postgres, real FastAPI app, real
 HTTP calls via httpx.AsyncClient. AuthService is NOT mocked here; this is
 the layer that proves the whole stack (routes -> service -> repositories ->
 database) actually works together, not just each piece in isolation.
+
+The `client` fixture used throughout is defined in tests/conftest.py and
+shared with test_refresh_edge_cases.py.
 """
 
 import uuid
 
-import httpx
-import pytest
 from sqlalchemy import text
-
-from app.main import app
-
-
-@pytest.fixture
-async def client(test_engine):
-    """An httpx AsyncClient wired to the real app, but pointed at the
-    isolated test database via dependency override."""
-    from sqlalchemy.ext.asyncio import async_sessionmaker
-    from app.db.session import get_db
-
-    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
-
-    async def override_get_db():
-        async with session_factory() as session:
-            yield session
-
-    app.dependency_overrides[get_db] = override_get_db
-
-    # Ensure a clean slate for each test, independent of test_session's own
-    # truncate (this fixture builds its own sessions via the override).
-    async with test_engine.begin() as conn:
-        await conn.execute(text("TRUNCATE TABLE refresh_tokens, users CASCADE"))
-
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-
-    app.dependency_overrides.clear()
 
 
 def unique_email(prefix: str) -> str:

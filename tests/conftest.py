@@ -50,3 +50,32 @@ async def test_session(test_engine) -> AsyncSession:
         except Exception:
             await session.rollback()
         yield session
+
+
+@pytest_asyncio.fixture
+async def client(test_engine):
+    """An httpx AsyncClient wired to the real FastAPI app, with the get_db
+    dependency overridden to use the isolated test database. Shared across
+    every integration test module that needs to make real HTTP calls
+    against the app (test_auth_api.py, test_refresh_edge_cases.py, etc.)."""
+    import httpx
+
+    from app.db.session import get_db
+    from app.main import app
+
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    async with test_engine.begin() as conn:
+        await conn.execute(text("TRUNCATE TABLE refresh_tokens, users CASCADE"))
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+
+    app.dependency_overrides.clear()

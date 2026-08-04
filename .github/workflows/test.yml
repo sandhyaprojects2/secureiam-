@@ -1,0 +1,74 @@
+name: Test
+
+"on":
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: secureiam
+          POSTGRES_PASSWORD: secureiam
+          POSTGRES_DB: secureiam
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U secureiam -d secureiam"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Migrations and non-test-fixture code read DATABASE_URL.
+      DATABASE_URL: postgresql+asyncpg://secureiam:secureiam@localhost:5432/secureiam
+      # tests/conftest.py reads TEST_DATABASE_URL specifically, so the test
+      # suite never accidentally points at a "dev" database even in CI.
+      # Pointed at the same service here for simplicity -- CI's database is
+      # entirely ephemeral either way.
+      TEST_DATABASE_URL: postgresql+asyncpg://secureiam:secureiam@localhost:5432/secureiam
+      JWT_SECRET_KEY: ci-test-secret-not-for-production-use
+      JWT_ALGORITHM: HS256
+      JWT_ISSUER: secureiam
+      ACCESS_TOKEN_TTL_MINUTES: "15"
+      REFRESH_TOKEN_TTL_DAYS: "14"
+      ARGON2_TIME_COST: "3"
+      ARGON2_MEMORY_COST_KIB: "65536"
+      ARGON2_PARALLELISM: "4"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Wait for Postgres to be ready
+        run: |
+          for i in $(seq 1 20); do
+            pg_isready -h localhost -p 5432 -U secureiam && break
+            sleep 2
+          done
+
+      - name: Run database migrations
+        run: python -m alembic upgrade head
+        # Note: pgcrypto is created BY the migration itself
+        # (see app/db/migrations/versions/..._create_users_and_refresh_tokens.py),
+        # not as a separate manual step here -- this is exactly what makes
+        # `docker compose up` work with zero manual setup for a new
+        # contributor, and this CI step is what proves that claim is true.
+
+      - name: Confirm application is importable
+        run: python -c "from app.main import app; print('app imported OK:', app.title)"
+
+      - name: Run test suite
+        run: python -m pytest -v
