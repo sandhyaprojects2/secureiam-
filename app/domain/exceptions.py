@@ -106,3 +106,62 @@ class PermissionAlreadyAssignedError(Exception):
     already has the given permission. Translated from the repository
     layer's DuplicateRolePermissionError."""
     pass
+
+
+# --- Multi-tenancy (Phase 3.3) ---------------------------------------------
+#
+# Raised by AuthorizationService's organization-aware methods and by
+# OrganizationService. Same no-enumeration-concern reasoning as the RBAC
+# exceptions above: organization and user ids here are admin-supplied
+# identifiers for an internal management operation, not a public,
+# probeable surface like login.
+
+
+class OrganizationNotFoundError(Exception):
+    """Raised when an operation references an organization_id that does
+    not exist (create_role, assign_role when scoping to an organization,
+    OrganizationService.add_member/list_members)."""
+    pass
+
+
+class OrganizationNameAlreadyExistsError(Exception):
+    """Raised when OrganizationService.create_organization is attempted
+    with a name that already exists. Translated from the repository
+    layer's DuplicateOrganizationNameError."""
+    pass
+
+
+class UserNotFoundError(Exception):
+    """Raised when an operation references a user_id that does not exist
+    (OrganizationService.add_member). Distinct from AuthService's
+    enumeration-safe login/register exceptions -- this is an admin-facing
+    management operation on an already-known user id, not a public,
+    attacker-probeable field like an email address."""
+    pass
+
+
+class RoleOrganizationMismatchError(Exception):
+    """Raised by assign_role when the given role's own organization
+    scoping is incompatible with the requested assignment:
+      - the role is scoped to one organization but the assignment was
+        requested for no organization, or for a *different* one, OR
+      - (implicitly impossible in the other direction: a global role can
+        always be assigned with or without an organization_id).
+    """
+    pass
+
+
+class UserNotOrganizationMemberError(Exception):
+    """Raised by assign_role when granting an organization-scoped
+    assignment to a user who isn't a member of that organization.
+    Membership is a precondition for scoped access, not an automatic
+    side effect of being assigned a role within it -- see
+    AuthorizationService.assign_role()'s docstring."""
+    pass
+
+
+class OrganizationMembershipAlreadyExistsError(Exception):
+    """Raised when OrganizationService.add_member is attempted for a user
+    who is already a member of the given organization. Translated from
+    the repository layer's DuplicateMembershipError."""
+    pass

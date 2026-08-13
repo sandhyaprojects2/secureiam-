@@ -26,6 +26,10 @@ from app.db.session import get_db
 from app.domain.models import User
 from app.domain.services.auth_service import AuthService
 from app.domain.services.authorization_service import AuthorizationService
+from app.repositories.organization_membership_repository import (
+    OrganizationMembershipRepository,
+)
+from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.permission_repository import PermissionRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.role_repository import RoleRepository
@@ -104,12 +108,18 @@ async def get_authorization_service(
     session: AsyncSession = Depends(get_db),
 ) -> AuthorizationService:
     """Constructs AuthorizationService wired to real repositories sharing
-    one per-request database session -- same shape as get_auth_service()."""
+    one per-request database session -- same shape as get_auth_service().
+
+    Gained organization_repository/organization_membership_repository in
+    Phase 3.3, when AuthorizationService itself became organization-aware.
+    """
     return AuthorizationService(
         user_repository=UserRepository(session),
         role_repository=RoleRepository(session),
         permission_repository=PermissionRepository(session),
         user_role_repository=UserRoleRepository(session),
+        organization_repository=OrganizationRepository(session),
+        organization_membership_repository=OrganizationMembershipRepository(session),
     )
 
 

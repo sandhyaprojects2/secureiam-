@@ -16,17 +16,19 @@ from pydantic import BaseModel
 class AuthorizationDecision(BaseModel):
     """The result of an authorize() check.
 
-    Deliberately just `allowed` plus the (resource, action) that was
-    checked -- no "reason" field. Distinguishing *why* a check was denied
-    (inactive user vs. no matching permission vs. unrecognized permission)
-    is exactly the kind of signal AuthorizationService must not leak, for
-    the same reason InvalidCredentialsError never explains itself in
+    Deliberately just `allowed` plus the (resource, action[, organization])
+    that was checked -- no "reason" field. Distinguishing *why* a check was
+    denied (inactive user vs. no matching permission vs. unrecognized
+    permission vs. wrong organization context) is exactly the kind of
+    signal AuthorizationService must not leak, for the same reason
+    InvalidCredentialsError never explains itself in
     app/domain/exceptions.py.
     """
 
     allowed: bool
     resource: str
     action: str
+    organization_id: uuid.UUID | None = None
 
 
 class RoleResponse(BaseModel):
@@ -34,6 +36,7 @@ class RoleResponse(BaseModel):
     name: str
     description: str | None = None
     is_system_role: bool
+    organization_id: uuid.UUID | None = None
 
 
 class PermissionResponse(BaseModel):
