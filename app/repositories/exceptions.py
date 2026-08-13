@@ -12,3 +12,16 @@ class DuplicateEmailError(Exception):
     """Raised when attempting to create a user with an email that already
     exists, as detected by the database's UNIQUE constraint."""
     pass
+
+
+class DuplicateRoleNameError(Exception):
+    """Raised when attempting to create a role with a name that already
+    exists, as detected by the database's UNIQUE constraint on roles.name."""
+    pass
+
+
+class DuplicateRoleAssignmentError(Exception):
+    """Raised when attempting to assign a role to a user who already has
+    that exact role, as detected by the database's UNIQUE constraint on
+    user_roles(user_id, role_id)."""
+    pass
