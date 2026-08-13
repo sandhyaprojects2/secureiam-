@@ -25,3 +25,10 @@ class DuplicateRoleAssignmentError(Exception):
     that exact role, as detected by the database's UNIQUE constraint on
     user_roles(user_id, role_id)."""
     pass
+
+
+class DuplicateRolePermissionError(Exception):
+    """Raised when attempting to attach a permission to a role that
+    already has it, as detected by the composite primary key on
+    role_permissions(role_id, permission_id)."""
+    pass

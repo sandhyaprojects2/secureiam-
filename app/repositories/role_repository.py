@@ -15,12 +15,13 @@ default for something an administrator sets deliberately.
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models import Role
-from app.repositories.exceptions import DuplicateRoleNameError
+from app.domain.models.role_permission import role_permissions
+from app.repositories.exceptions import DuplicateRolePermissionError, DuplicateRoleNameError
 
 
 class RoleRepository:
@@ -56,3 +57,41 @@ class RoleRepository:
         """Returns every role, ordered by name for stable, predictable output."""
         result = await self.session.execute(select(Role).order_by(Role.name))
         return list(result.scalars().all())
+
+    async def add_permission(self, role_id: uuid.UUID, permission_id: uuid.UUID) -> None:
+        """Attaches a permission to a role via the role_permissions
+        association table. Raises DuplicateRolePermissionError if the role
+        already has this exact permission -- detected via the table's
+        composite primary key. Callers (AuthorizationService) are
+        responsible for confirming role_id and permission_id refer to real
+        rows first; this method's IntegrityError handling assumes the only
+        constraint that can fail here is the duplicate one, not a foreign
+        key violation."""
+        try:
+            await self.session.execute(
+                insert(role_permissions).values(role_id=role_id, permission_id=permission_id)
+            )
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            raise DuplicateRolePermissionError(
+                f"Role {role_id} already has permission {permission_id}"
+            ) from exc
+
+    async def remove_permission(self, role_id: uuid.UUID, permission_id: uuid.UUID) -> bool:
+        """Detaches a permission from a role, if attached.
+
+        Returns True if a mapping was found and removed, False if the role
+        didn't have that permission to begin with. Deliberately does not
+        raise on "not found" -- mirrors UserRoleRepository.revoke()'s
+        not-found-is-not-an-error pattern, leaving that decision to
+        AuthorizationService.
+        """
+        result = await self.session.execute(
+            delete(role_permissions).where(
+                role_permissions.c.role_id == role_id,
+                role_permissions.c.permission_id == permission_id,
+            )
+        )
+        await self.session.commit()
+        return result.rowcount > 0

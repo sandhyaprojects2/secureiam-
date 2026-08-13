@@ -19,9 +19,15 @@ fresh objects via new awaited queries rather than reusing old references.
 import uuid
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.repositories.exceptions import DuplicateRoleAssignmentError, DuplicateRoleNameError
+from app.domain.models.role_permission import role_permissions
+from app.repositories.exceptions import (
+    DuplicateRoleAssignmentError,
+    DuplicateRoleNameError,
+    DuplicateRolePermissionError,
+)
 from app.repositories.permission_repository import PermissionRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.user_repository import UserRepository
@@ -124,6 +130,70 @@ async def test_list_all_includes_newly_created_role(test_session):
     roles = await repo.list_all()
 
     assert any(r.name == name for r in roles)
+
+
+# --- RoleRepository permission management (Phase 2.3) -----------------
+
+async def test_add_permission_to_role_succeeds(test_session):
+    role_repo = RoleRepository(test_session)
+    perm_repo = PermissionRepository(test_session)
+    role = await role_repo.create_role(unique_role_name("PermAddRole"))
+    permission = await perm_repo.get_by_resource_action("document", "view")
+    role_id, permission_id = role.id, permission.id
+
+    await role_repo.add_permission(role_id, permission_id)
+
+    result = await test_session.execute(
+        select(role_permissions).where(
+            role_permissions.c.role_id == role_id,
+            role_permissions.c.permission_id == permission_id,
+        )
+    )
+    assert result.fetchone() is not None
+
+
+async def test_add_permission_duplicate_is_rejected(test_session):
+    role_repo = RoleRepository(test_session)
+    perm_repo = PermissionRepository(test_session)
+    role = await role_repo.create_role(unique_role_name("PermDupRole"))
+    permission = await perm_repo.get_by_resource_action("document", "edit")
+    role_id, permission_id = role.id, permission.id
+
+    await role_repo.add_permission(role_id, permission_id)
+
+    with pytest.raises(DuplicateRolePermissionError):
+        await role_repo.add_permission(role_id, permission_id)
+
+
+async def test_remove_permission_from_role_succeeds(test_session):
+    role_repo = RoleRepository(test_session)
+    perm_repo = PermissionRepository(test_session)
+    role = await role_repo.create_role(unique_role_name("PermRemoveRole"))
+    permission = await perm_repo.get_by_resource_action("document", "delete")
+    role_id, permission_id = role.id, permission.id
+    await role_repo.add_permission(role_id, permission_id)
+
+    result = await role_repo.remove_permission(role_id, permission_id)
+
+    assert result is True
+    remaining = await test_session.execute(
+        select(role_permissions).where(
+            role_permissions.c.role_id == role_id,
+            role_permissions.c.permission_id == permission_id,
+        )
+    )
+    assert remaining.fetchone() is None
+
+
+async def test_remove_permission_from_role_nonexistent_returns_false(test_session):
+    role_repo = RoleRepository(test_session)
+    perm_repo = PermissionRepository(test_session)
+    role = await role_repo.create_role(unique_role_name("PermNeverAddedRole"))
+    permission = await perm_repo.get_by_resource_action("role", "manage")
+
+    result = await role_repo.remove_permission(role.id, permission.id)
+
+    assert result is False
 
 
 # --- PermissionRepository (read-only) ---------------------------------------------------

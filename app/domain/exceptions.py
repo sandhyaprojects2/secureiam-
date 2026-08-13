@@ -51,3 +51,58 @@ class InvalidRefreshTokenError(Exception):
     guessed/stolen token value was ever valid.
     """
     pass
+
+
+# --- Authorization (Phase 2.3) ---------------------------------------------
+#
+# These are raised by AuthorizationService. Unlike the authentication
+# exceptions above, there is no enumeration concern here -- role and
+# permission ids are internal, admin-supplied identifiers, not user-facing
+# secrets, so each distinct failure is free to be its own exception type.
+#
+# Notably absent: there is no "PermissionDenied"-style exception.
+# AuthorizationService.authorize() never raises to signal "not allowed" --
+# it returns a decision. Deny-by-default is a return value, not a control-
+# flow exception, so a caller can't accidentally treat "denied" as a bug to
+# catch-and-ignore.
+
+
+class RoleNotFoundError(Exception):
+    """Raised when an operation references a role_id that does not exist
+    (assign_role, revoke_role, assign_permission_to_role,
+    remove_permission_from_role)."""
+    pass
+
+
+class PermissionNotFoundError(Exception):
+    """Raised when an operation references a permission_id that does not
+    exist (assign_permission_to_role).
+
+    Deliberately distinct from authorize() being asked about an
+    unrecognized (resource, action) pair -- that is NOT an error, it's
+    simply denied, since authorize() must never distinguish "no such
+    permission exists" from "this permission exists but you don't have
+    it." This exception exists only for admin-facing role/permission
+    *management* operations, where the id is expected to already exist.
+    """
+    pass
+
+
+class RoleNameAlreadyExistsError(Exception):
+    """Raised when create_role is attempted with a name that already
+    exists. Translated from the repository layer's DuplicateRoleNameError."""
+    pass
+
+
+class RoleAlreadyAssignedError(Exception):
+    """Raised when assign_role is attempted for a user who already has the
+    given role. Translated from the repository layer's
+    DuplicateRoleAssignmentError."""
+    pass
+
+
+class PermissionAlreadyAssignedError(Exception):
+    """Raised when assign_permission_to_role is attempted for a role that
+    already has the given permission. Translated from the repository
+    layer's DuplicateRolePermissionError."""
+    pass
