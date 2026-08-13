@@ -56,3 +56,57 @@ def test_openapi_schema_generates_without_error():
     schema = app.openapi()
     assert "/v1/auth/register" in schema["paths"]
     assert "/v1/auth/login" in schema["paths"]
+
+
+def test_all_expected_authorization_routes_are_registered():
+    route_paths = {route.path for route in app.routes}
+    expected = {
+        "/v1/authorize",
+        "/v1/roles",
+        "/v1/roles/{role_id}/permissions",
+        "/v1/roles/{role_id}/permissions/{permission_id}",
+        "/v1/users/me/permissions",
+        "/v1/users/{user_id}/roles",
+        "/v1/users/{user_id}/roles/{role_id}",
+        "/v1/users/{user_id}/permissions",
+    }
+    assert expected.issubset(route_paths)
+
+
+def test_users_me_permissions_is_registered_before_the_parameterized_route():
+    """Locks in the route-ordering requirement documented in
+    app/api/v1/authorize.py: /users/me/permissions must come before
+    /users/{user_id}/permissions or Starlette would never reach it."""
+    permission_routes = [
+        route.path
+        for route in app.routes
+        if getattr(route, "path", "").startswith("/v1/users/") and "permissions" in route.path
+    ]
+    assert permission_routes.index("/v1/users/me/permissions") < permission_routes.index(
+        "/v1/users/{user_id}/permissions"
+    )
+
+
+def test_create_role_endpoint_returns_201_status_code_configured():
+    create_role_route = next(r for r in app.routes if r.path == "/v1/roles")
+    assert create_role_route.status_code == 201
+
+
+def test_role_and_user_mutation_routes_return_204_status_code_configured():
+    for path in (
+        "/v1/roles/{role_id}/permissions",
+        "/v1/users/{user_id}/roles",
+    ):
+        route = next(
+            r for r in app.routes if r.path == path and "POST" in getattr(r, "methods", set())
+        )
+        assert route.status_code == 204
+
+    for path in (
+        "/v1/roles/{role_id}/permissions/{permission_id}",
+        "/v1/users/{user_id}/roles/{role_id}",
+    ):
+        route = next(
+            r for r in app.routes if r.path == path and "DELETE" in getattr(r, "methods", set())
+        )
+        assert route.status_code == 204

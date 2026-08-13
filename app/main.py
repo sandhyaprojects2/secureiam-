@@ -8,14 +8,17 @@ business logic, database, or security code.
 from fastapi import FastAPI
 
 from app.api.v1.auth import router as auth_router
+from app.api.v1.authorize import router as authorize_router
 
 app = FastAPI(
     title="SecureIAM",
-    description="Identity and Access Management platform — Phase 1 (Authentication)",
-    version="0.1.0",
+    description="Identity and Access Management platform — Phase 1 (Authentication) "
+    "+ Phase 2 (RBAC & Authorization)",
+    version="0.2.0",
 )
 
 app.include_router(auth_router)
+app.include_router(authorize_router)
 
 
 @app.get("/health", tags=["health"])
