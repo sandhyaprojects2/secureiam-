@@ -12,6 +12,8 @@ from app.domain.models.role import Role
 from app.domain.models.permission import Permission
 from app.domain.models.role_permission import role_permissions
 from app.domain.models.user_role import UserRole
+from app.domain.models.organization import Organization
+from app.domain.models.organization_membership import OrganizationMembership
 
 __all__ = [
     "User",
@@ -20,4 +22,6 @@ __all__ = [
     "Permission",
     "role_permissions",
     "UserRole",
+    "Organization",
+    "OrganizationMembership",
 ]

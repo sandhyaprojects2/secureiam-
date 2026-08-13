@@ -64,6 +64,10 @@ async def test_migrations_apply_cleanly_to_a_fresh_empty_database():
             assert "role_permissions" in table_names
             assert "user_roles" in table_names
 
+            # Phase 3 tables.
+            assert "organizations" in table_names
+            assert "organization_memberships" in table_names
+
             # pgcrypto must have been created by the migration itself, not
             # assumed to pre-exist on a fresh database.
             extensions = await check_conn.fetch(
@@ -80,6 +84,16 @@ async def test_migrations_apply_cleanly_to_a_fresh_empty_database():
             assert role_count == 4
             assert permission_count == 5
             assert mapping_count == 12
+
+            # Phase 3: no organizations are seeded -- they're created
+            # through the API, not a migration -- and all four seeded
+            # roles must be global (organization_id NULL), never org-scoped.
+            organization_count = await check_conn.fetchval("SELECT count(*) FROM organizations")
+            assert organization_count == 0
+            global_role_count = await check_conn.fetchval(
+                "SELECT count(*) FROM roles WHERE organization_id IS NULL"
+            )
+            assert global_role_count == 4
         finally:
             await check_conn.close()
 
