@@ -32,3 +32,17 @@ class DuplicateRolePermissionError(Exception):
     already has it, as detected by the composite primary key on
     role_permissions(role_id, permission_id)."""
     pass
+
+
+class DuplicateOrganizationNameError(Exception):
+    """Raised when attempting to create an organization with a name that
+    already exists, as detected by the database's UNIQUE constraint on
+    organizations.name."""
+    pass
+
+
+class DuplicateMembershipError(Exception):
+    """Raised when attempting to add a user to an organization they
+    already belong to, as detected by the database's UNIQUE constraint on
+    organization_memberships(user_id, organization_id)."""
+    pass

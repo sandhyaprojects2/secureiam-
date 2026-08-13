@@ -28,6 +28,7 @@ from app.repositories.exceptions import (
     DuplicateRoleNameError,
     DuplicateRolePermissionError,
 )
+from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.permission_repository import PermissionRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.user_repository import UserRepository
@@ -35,6 +36,10 @@ from app.repositories.user_role_repository import UserRoleRepository
 
 
 def unique_role_name(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def unique_org_name(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
@@ -440,3 +445,104 @@ async def test_deleting_user_cascades_user_role_assignments(test_session):
 
     result = await test_session.execute(select(UserRole).where(UserRole.id == user_role_id))
     assert result.scalar_one_or_none() is None
+
+
+# --- Organization scoping (Phase 3.2) ---------------------------------------------------
+
+async def test_create_role_organization_id_defaults_to_none(test_session):
+    repo = RoleRepository(test_session)
+    role = await repo.create_role(unique_role_name("DefaultGlobalRole"))
+    assert role.organization_id is None
+
+
+async def test_create_role_can_be_scoped_to_an_organization(test_session):
+    role_repo = RoleRepository(test_session)
+    org_repo = OrganizationRepository(test_session)
+    org = await org_repo.create_organization(unique_org_name("RoleScopeOrg"))
+
+    role = await role_repo.create_role(unique_role_name("OrgScopedRole"), organization_id=org.id)
+
+    assert role.organization_id == org.id
+
+
+async def test_assign_with_no_organization_id_is_global_and_visible_without_org_context(
+    test_session,
+):
+    role_repo = RoleRepository(test_session)
+    ur_repo = UserRoleRepository(test_session)
+    user = await _make_user(test_session)
+    role = await role_repo.create_role(unique_role_name("GlobalScopeAssignRole"))
+
+    await ur_repo.assign(user.id, role.id)
+
+    roles = await ur_repo.get_roles_for_user(user.id)
+    assert any(r.id == role.id for r in roles)
+
+
+async def test_org_scoped_assignment_is_not_visible_without_matching_organization_id(
+    test_session,
+):
+    """A role assigned scoped to org A must not show up when resolving the
+    user's roles/permissions with no organization context, and must not
+    show up under a *different* organization's context either."""
+    role_repo = RoleRepository(test_session)
+    ur_repo = UserRoleRepository(test_session)
+    org_repo = OrganizationRepository(test_session)
+    user = await _make_user(test_session)
+    role = await role_repo.create_role(unique_role_name("ScopedOnlyRole"))
+    org_a = await org_repo.create_organization(unique_org_name("ScopeOrgA"))
+    org_b = await org_repo.create_organization(unique_org_name("ScopeOrgB"))
+
+    await ur_repo.assign(user.id, role.id, organization_id=org_a.id)
+
+    no_context_roles = await ur_repo.get_roles_for_user(user.id)
+    other_org_roles = await ur_repo.get_roles_for_user(user.id, organization_id=org_b.id)
+    same_org_roles = await ur_repo.get_roles_for_user(user.id, organization_id=org_a.id)
+
+    assert role.id not in {r.id for r in no_context_roles}
+    assert role.id not in {r.id for r in other_org_roles}
+    assert role.id in {r.id for r in same_org_roles}
+
+
+async def test_get_permissions_for_user_includes_global_plus_org_scoped_for_given_org(
+    test_session,
+):
+    role_repo = RoleRepository(test_session)
+    ur_repo = UserRoleRepository(test_session)
+    org_repo = OrganizationRepository(test_session)
+    user = await _make_user(test_session)
+    intern_role = await role_repo.get_by_name("Intern")  # seeded: document:view
+    developer_role = await role_repo.get_by_name("Developer")  # seeded: document:view, edit
+    org = await org_repo.create_organization(unique_org_name("PermScopeOrg"))
+
+    await ur_repo.assign(user.id, intern_role.id)  # global
+    await ur_repo.assign(user.id, developer_role.id, organization_id=org.id)  # org-scoped
+
+    global_only = await ur_repo.get_permissions_for_user(user.id)
+    with_org_context = await ur_repo.get_permissions_for_user(user.id, organization_id=org.id)
+
+    assert {(p.resource, p.action) for p in global_only} == {("document", "view")}
+    assert {(p.resource, p.action) for p in with_org_context} == {
+        ("document", "view"),
+        ("document", "edit"),
+    }
+
+
+async def test_revoke_requires_matching_organization_id(test_session):
+    """Revoking with no organization_id must not remove an org-scoped
+    assignment, and vice versa -- revoke() is an exact-row match, not the
+    global-plus-scoped union reads use."""
+    role_repo = RoleRepository(test_session)
+    ur_repo = UserRoleRepository(test_session)
+    org_repo = OrganizationRepository(test_session)
+    user = await _make_user(test_session)
+    role = await role_repo.create_role(unique_role_name("RevokeScopeRole"))
+    org = await org_repo.create_organization(unique_org_name("RevokeScopeOrg"))
+    user_id, role_id, org_id = user.id, role.id, org.id
+    await ur_repo.assign(user_id, role_id, organization_id=org_id)
+
+    wrong_scope_result = await ur_repo.revoke(user_id, role_id)  # no org_id -- wrong row
+    correct_scope_result = await ur_repo.revoke(user_id, role_id, organization_id=org_id)
+
+    assert wrong_scope_result is False
+    assert correct_scope_result is True

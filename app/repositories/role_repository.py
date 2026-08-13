@@ -28,11 +28,26 @@ class RoleRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create_role(self, name: str, description: str | None = None) -> Role:
+    async def create_role(
+        self,
+        name: str,
+        description: str | None = None,
+        organization_id: uuid.UUID | None = None,
+    ) -> Role:
         """Persists a new role. Raises DuplicateRoleNameError if the name
         already exists -- callers decide what that means, this method only
-        reports it."""
-        role = Role(name=name, description=description)
+        reports it.
+
+        organization_id defaults to None (a global/system role, usable
+        everywhere) -- callers pass a real organization id (Phase 3) to
+        create a role scoped to, and only assignable within, that one
+        organization. Existence of that organization is the caller's
+        (AuthorizationService's) responsibility to check first; this
+        method assumes any IntegrityError it sees is the duplicate-name
+        case, not a foreign key violation, same as add_permission()
+        below.
+        """
+        role = Role(name=name, description=description, organization_id=organization_id)
         self.session.add(role)
         try:
             await self.session.commit()
