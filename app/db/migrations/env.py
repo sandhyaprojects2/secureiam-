@@ -20,7 +20,8 @@ from alembic import context
 # this is what makes autogenerate see the complete schema.
 from app.core.config import get_settings
 from app.db.session import Base
-from app.domain.models import User, RefreshToken  # noqa: F401
+from app.domain.models import User, RefreshToken, Role, Permission, UserRole  # noqa: F401
+from app.domain.models.role_permission import role_permissions  # noqa: F401
 
 config = context.config
 

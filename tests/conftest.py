@@ -38,9 +38,14 @@ async def test_session(test_engine) -> AsyncSession:
     commit real rows (e.g. creating a User) are idempotent across repeated
     runs instead of failing on stale data from a previous run. TRUNCATE ...
     CASCADE handles the users -> refresh_tokens FK relationship in one
-    statement. Wrapped in a try/except so this fixture still works for
-    modules (like test_db_session.py) run before any migration has created
-    these tables.
+    statement, and (since Phase 2.1) also implicitly cascades to user_roles
+    (which references users.id) -- it does NOT touch roles, permissions, or
+    role_permissions, since those aren't downstream of users/refresh_tokens.
+    This is intentional: Phase 2's seeded roles/permissions are reference
+    data that should persist across tests, while per-test role *assignments*
+    (user_roles) are cleared along with the users they're assigned to.
+    Wrapped in a try/except so this fixture still works for modules (like
+    test_db_session.py) run before any migration has created these tables.
     """
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with session_factory() as session:

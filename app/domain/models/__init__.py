@@ -8,5 +8,16 @@ autogenerate to see the complete schema.
 
 from app.domain.models.user import User
 from app.domain.models.refresh_token import RefreshToken
+from app.domain.models.role import Role
+from app.domain.models.permission import Permission
+from app.domain.models.role_permission import role_permissions
+from app.domain.models.user_role import UserRole
 
-__all__ = ["User", "RefreshToken"]
+__all__ = [
+    "User",
+    "RefreshToken",
+    "Role",
+    "Permission",
+    "role_permissions",
+    "UserRole",
+]

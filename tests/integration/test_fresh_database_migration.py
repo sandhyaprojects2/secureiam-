@@ -58,6 +58,11 @@ async def test_migrations_apply_cleanly_to_a_fresh_empty_database():
             assert "users" in table_names
             assert "refresh_tokens" in table_names
             assert "alembic_version" in table_names
+            # Phase 2.1 tables -- a fresh install must produce these too.
+            assert "roles" in table_names
+            assert "permissions" in table_names
+            assert "role_permissions" in table_names
+            assert "user_roles" in table_names
 
             # pgcrypto must have been created by the migration itself, not
             # assumed to pre-exist on a fresh database.
@@ -65,6 +70,16 @@ async def test_migrations_apply_cleanly_to_a_fresh_empty_database():
                 "SELECT extname FROM pg_extension WHERE extname = 'pgcrypto'"
             )
             assert len(extensions) == 1
+
+            # The seed migration must have populated the default roles and
+            # permission catalog on a completely fresh database, not just
+            # on the long-lived dev/test databases used elsewhere.
+            role_count = await check_conn.fetchval("SELECT count(*) FROM roles")
+            permission_count = await check_conn.fetchval("SELECT count(*) FROM permissions")
+            mapping_count = await check_conn.fetchval("SELECT count(*) FROM role_permissions")
+            assert role_count == 4
+            assert permission_count == 5
+            assert mapping_count == 12
         finally:
             await check_conn.close()
 
