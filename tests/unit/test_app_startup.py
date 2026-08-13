@@ -110,3 +110,37 @@ def test_role_and_user_mutation_routes_return_204_status_code_configured():
             r for r in app.routes if r.path == path and "DELETE" in getattr(r, "methods", set())
         )
         assert route.status_code == 204
+
+
+def test_all_expected_organization_routes_are_registered():
+    route_paths = {route.path for route in app.routes}
+    expected = {
+        "/v1/organizations",
+        "/v1/organizations/{organization_id}/members",
+        "/v1/organizations/{organization_id}/members/{user_id}",
+        "/v1/users/me/organizations",
+    }
+    assert expected.issubset(route_paths)
+
+
+def test_create_organization_endpoint_returns_201_status_code_configured():
+    create_org_route = next(r for r in app.routes if r.path == "/v1/organizations")
+    assert create_org_route.status_code == 201
+
+
+def test_organization_mutation_routes_return_204_status_code_configured():
+    add_member_route = next(
+        r
+        for r in app.routes
+        if r.path == "/v1/organizations/{organization_id}/members"
+        and "POST" in getattr(r, "methods", set())
+    )
+    assert add_member_route.status_code == 204
+
+    remove_member_route = next(
+        r
+        for r in app.routes
+        if r.path == "/v1/organizations/{organization_id}/members/{user_id}"
+        and "DELETE" in getattr(r, "methods", set())
+    )
+    assert remove_member_route.status_code == 204

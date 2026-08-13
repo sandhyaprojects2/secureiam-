@@ -18,7 +18,7 @@ a UUID against the parameterized route).
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.api.v1.schemas.authorization import (
     AssignPermissionRequest,
@@ -31,11 +31,14 @@ from app.api.v1.schemas.authorization import (
 )
 from app.core.dependencies import get_authorization_service, get_current_user, require_permission
 from app.domain.exceptions import (
+    OrganizationNotFoundError,
     PermissionAlreadyAssignedError,
     PermissionNotFoundError,
     RoleAlreadyAssignedError,
     RoleNameAlreadyExistsError,
     RoleNotFoundError,
+    RoleOrganizationMismatchError,
+    UserNotOrganizationMemberError,
 )
 from app.domain.models import User
 from app.domain.services.authorization_service import AuthorizationService
@@ -56,7 +59,9 @@ async def authorize(
     else's permissions would itself be an authorization question this
     endpoint has no way to gate correctly, so it's simply not offered.
     """
-    decision = await service.authorize(user.id, request.resource, request.action)
+    decision = await service.authorize(
+        user.id, request.resource, request.action, organization_id=request.organization_id
+    )
     return AuthorizeResponse(**decision.model_dump())
 
 
@@ -67,7 +72,15 @@ async def create_role(
     service: AuthorizationService = Depends(get_authorization_service),
 ) -> RoleResponse:
     try:
-        result = await service.create_role(name=request.name, description=request.description)
+        result = await service.create_role(
+            name=request.name,
+            description=request.description,
+            organization_id=request.organization_id,
+        )
+    except OrganizationNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found."
+        )
     except RoleNameAlreadyExistsError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -128,13 +141,16 @@ async def remove_permission_from_role(
 
 @router.get("/users/me/permissions", response_model=list[PermissionResponse])
 async def get_my_permissions(
+    organization_id: uuid.UUID | None = Query(default=None),
     user: User = Depends(get_current_user),
     service: AuthorizationService = Depends(get_authorization_service),
 ) -> list[PermissionResponse]:
     """Self-service permission listing -- requires only authentication, no
     additional permission, since a user asking about their own grants is
-    not a privileged operation."""
-    permissions = await service.get_user_permissions(user.id)
+    not a privileged operation. organization_id is optional: omitted,
+    resolves only global grants; given, also includes grants scoped to
+    that organization."""
+    permissions = await service.get_user_permissions(user.id, organization_id=organization_id)
     return [PermissionResponse(**p.model_dump()) for p in permissions]
 
 
@@ -149,9 +165,23 @@ async def assign_role_to_user(
     service: AuthorizationService = Depends(get_authorization_service),
 ) -> Response:
     try:
-        await service.assign_role(user_id, request.role_id)
+        await service.assign_role(user_id, request.role_id, organization_id=request.organization_id)
     except RoleNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found.")
+    except OrganizationNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found."
+        )
+    except RoleOrganizationMismatchError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This role's organization scope does not match the requested assignment.",
+        )
+    except UserNotOrganizationMemberError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User is not a member of this organization.",
+        )
     except RoleAlreadyAssignedError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -168,20 +198,23 @@ async def assign_role_to_user(
 async def revoke_role_from_user(
     user_id: uuid.UUID,
     role_id: uuid.UUID,
+    organization_id: uuid.UUID | None = Query(default=None),
     _: User = Depends(require_permission("user", "manage")),
     service: AuthorizationService = Depends(get_authorization_service),
 ) -> Response:
     # Same idempotent shape as remove_permission_from_role() above: revoking
-    # a role the user never had is a no-op, not a 404.
-    await service.revoke_role(user_id, role_id)
+    # a role the user never had (in the given organization scope) is a
+    # no-op, not a 404.
+    await service.revoke_role(user_id, role_id, organization_id=organization_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/users/{user_id}/permissions", response_model=list[PermissionResponse])
 async def get_user_permissions(
     user_id: uuid.UUID,
+    organization_id: uuid.UUID | None = Query(default=None),
     _: User = Depends(require_permission("user", "manage")),
     service: AuthorizationService = Depends(get_authorization_service),
 ) -> list[PermissionResponse]:
-    permissions = await service.get_user_permissions(user_id)
+    permissions = await service.get_user_permissions(user_id, organization_id=organization_id)
     return [PermissionResponse(**p.model_dump()) for p in permissions]

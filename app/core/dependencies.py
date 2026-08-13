@@ -26,6 +26,7 @@ from app.db.session import get_db
 from app.domain.models import User
 from app.domain.services.auth_service import AuthService
 from app.domain.services.authorization_service import AuthorizationService
+from app.domain.services.organization_service import OrganizationService
 from app.repositories.organization_membership_repository import (
     OrganizationMembershipRepository,
 )
@@ -120,6 +121,19 @@ async def get_authorization_service(
         user_role_repository=UserRoleRepository(session),
         organization_repository=OrganizationRepository(session),
         organization_membership_repository=OrganizationMembershipRepository(session),
+    )
+
+
+async def get_organization_service(
+    session: AsyncSession = Depends(get_db),
+) -> OrganizationService:
+    """Constructs OrganizationService wired to real repositories sharing
+    one per-request database session -- same shape as get_auth_service()
+    and get_authorization_service()."""
+    return OrganizationService(
+        organization_repository=OrganizationRepository(session),
+        organization_membership_repository=OrganizationMembershipRepository(session),
+        user_repository=UserRepository(session),
     )
 
 

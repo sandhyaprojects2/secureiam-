@@ -75,15 +75,18 @@ async def test_migrations_apply_cleanly_to_a_fresh_empty_database():
             )
             assert len(extensions) == 1
 
-            # The seed migration must have populated the default roles and
+            # The seed migrations must have populated the default roles and
             # permission catalog on a completely fresh database, not just
-            # on the long-lived dev/test databases used elsewhere.
+            # on the long-lived dev/test databases used elsewhere. Counts
+            # reflect both seed migrations: ca306aad2376 (4 roles, 5
+            # permissions, 12 mappings) plus Phase 3.4's
+            # 97122fa13dcc (+1 permission, +1 mapping to Admin).
             role_count = await check_conn.fetchval("SELECT count(*) FROM roles")
             permission_count = await check_conn.fetchval("SELECT count(*) FROM permissions")
             mapping_count = await check_conn.fetchval("SELECT count(*) FROM role_permissions")
             assert role_count == 4
-            assert permission_count == 5
-            assert mapping_count == 12
+            assert permission_count == 6
+            assert mapping_count == 13
 
             # Phase 3: no organizations are seeded -- they're created
             # through the API, not a migration -- and all four seeded

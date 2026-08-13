@@ -18,11 +18,13 @@ from pydantic import BaseModel
 class AuthorizeRequest(BaseModel):
     resource: str
     action: str
+    organization_id: uuid.UUID | None = None
 
 
 class CreateRoleRequest(BaseModel):
     name: str
     description: str | None = None
+    organization_id: uuid.UUID | None = None
 
 
 class AssignPermissionRequest(BaseModel):
@@ -31,6 +33,7 @@ class AssignPermissionRequest(BaseModel):
 
 class AssignRoleRequest(BaseModel):
     role_id: uuid.UUID
+    organization_id: uuid.UUID | None = None
 
 
 # --- Responses ---------------------------------------------------
@@ -39,6 +42,7 @@ class AuthorizeResponse(BaseModel):
     allowed: bool
     resource: str
     action: str
+    organization_id: uuid.UUID | None = None
 
 
 class RoleResponse(BaseModel):
@@ -46,6 +50,7 @@ class RoleResponse(BaseModel):
     name: str
     description: str | None = None
     is_system_role: bool
+    organization_id: uuid.UUID | None = None
 
 
 class PermissionResponse(BaseModel):

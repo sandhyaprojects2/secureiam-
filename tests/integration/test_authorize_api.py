@@ -88,7 +88,12 @@ async def test_authorize_allows_when_user_has_permission(client, test_engine):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"allowed": True, "resource": "document", "action": "view"}
+    assert response.json() == {
+        "allowed": True,
+        "resource": "document",
+        "action": "view",
+        "organization_id": None,
+    }
 
 
 async def test_authorize_denies_when_user_has_no_roles(client):
@@ -453,3 +458,153 @@ async def test_get_user_permissions_succeeds_for_admin(client, test_engine):
     assert response.status_code == 200
     pairs = {(p["resource"], p["action"]) for p in response.json()}
     assert ("user", "manage") in pairs  # Manager role grants this
+
+
+# --- Organization-scoped assignment (Phase 3.4) ---------------------------------------------------
+
+def unique_org_name(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+async def _create_organization(client, admin_token, name=None):
+    response = await client.post(
+        "/v1/organizations",
+        json={"name": name or f"OrgScopeOrg-{uuid.uuid4().hex[:8]}"},
+        headers=_auth_header(admin_token),
+    )
+    return response.json()["id"]
+
+
+async def _add_member(client, admin_token, org_id, user_id):
+    await client.post(
+        f"/v1/organizations/{org_id}/members",
+        json={"user_id": str(user_id)},
+        headers=_auth_header(admin_token),
+    )
+
+
+async def test_assign_role_scoped_to_organization_requires_membership(client, test_engine):
+    admin_token, _ = await _make_admin(client, test_engine, "orgscope-nonmember-admin")
+    org_id = await _create_organization(client, admin_token)
+    _, target_email = await _register_and_login(client, "orgscope-nonmember-target")
+    target_user_id = await _get_user_id(test_engine, target_email)
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        role_id = (await RoleRepository(session).get_by_name("Intern")).id
+
+    response = await client.post(
+        f"/v1/users/{target_user_id}/roles",
+        json={"role_id": str(role_id), "organization_id": org_id},
+        headers=_auth_header(admin_token),
+    )
+
+    assert response.status_code == 409
+
+
+async def test_assign_role_scoped_to_organization_succeeds_for_member(client, test_engine):
+    admin_token, _ = await _make_admin(client, test_engine, "orgscope-member-admin")
+    org_id = await _create_organization(client, admin_token)
+    target_token, target_email = await _register_and_login(client, "orgscope-member-target")
+    target_user_id = await _get_user_id(test_engine, target_email)
+    await _add_member(client, admin_token, org_id, target_user_id)
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        role_id = (await RoleRepository(session).get_by_name("Developer")).id
+
+    response = await client.post(
+        f"/v1/users/{target_user_id}/roles",
+        json={"role_id": str(role_id), "organization_id": org_id},
+        headers=_auth_header(admin_token),
+    )
+
+    assert response.status_code == 204
+
+    scoped = await client.get(
+        f"/v1/users/{target_user_id}/permissions",
+        params={"organization_id": org_id},
+        headers=_auth_header(admin_token),
+    )
+    unscoped = await client.get(
+        f"/v1/users/{target_user_id}/permissions", headers=_auth_header(admin_token)
+    )
+
+    scoped_pairs = {(p["resource"], p["action"]) for p in scoped.json()}
+    assert ("document", "edit") in scoped_pairs  # Developer grants this
+    assert unscoped.json() == []  # not visible with no organization context
+
+
+async def test_assign_role_scoped_to_unknown_organization_returns_404(client, test_engine):
+    admin_token, _ = await _make_admin(client, test_engine, "orgscope-unknownorg-admin")
+    _, target_email = await _register_and_login(client, "orgscope-unknownorg-target")
+    target_user_id = await _get_user_id(test_engine, target_email)
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        role_id = (await RoleRepository(session).get_by_name("Intern")).id
+
+    response = await client.post(
+        f"/v1/users/{target_user_id}/roles",
+        json={"role_id": str(role_id), "organization_id": str(uuid.uuid4())},
+        headers=_auth_header(admin_token),
+    )
+
+    assert response.status_code == 404
+
+
+async def test_authorize_with_organization_id_includes_org_scoped_permission(client, test_engine):
+    admin_token, _ = await _make_admin(client, test_engine, "orgscope-authz-admin")
+    org_id = await _create_organization(client, admin_token)
+    target_token, target_email = await _register_and_login(client, "orgscope-authz-target")
+    target_user_id = await _get_user_id(test_engine, target_email)
+    await _add_member(client, admin_token, org_id, target_user_id)
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        role_id = (await RoleRepository(session).get_by_name("Intern")).id
+    await client.post(
+        f"/v1/users/{target_user_id}/roles",
+        json={"role_id": str(role_id), "organization_id": org_id},
+        headers=_auth_header(admin_token),
+    )
+
+    with_org = await client.post(
+        "/v1/authorize",
+        json={"resource": "document", "action": "view", "organization_id": org_id},
+        headers=_auth_header(target_token),
+    )
+    without_org = await client.post(
+        "/v1/authorize",
+        json={"resource": "document", "action": "view"},
+        headers=_auth_header(target_token),
+    )
+
+    assert with_org.json()["allowed"] is True
+    assert without_org.json()["allowed"] is False
+
+
+async def test_revoke_role_scoped_to_organization_removes_only_that_assignment(client, test_engine):
+    admin_token, _ = await _make_admin(client, test_engine, "orgscope-revoke-admin")
+    org_id = await _create_organization(client, admin_token)
+    target_token, target_email = await _register_and_login(client, "orgscope-revoke-target")
+    target_user_id = await _get_user_id(test_engine, target_email)
+    await _add_member(client, admin_token, org_id, target_user_id)
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        role_id = (await RoleRepository(session).get_by_name("Intern")).id
+    await client.post(
+        f"/v1/users/{target_user_id}/roles",
+        json={"role_id": str(role_id), "organization_id": org_id},
+        headers=_auth_header(admin_token),
+    )
+
+    response = await client.delete(
+        f"/v1/users/{target_user_id}/roles/{role_id}",
+        params={"organization_id": org_id},
+        headers=_auth_header(admin_token),
+    )
+
+    assert response.status_code == 204
+    after = await client.get(
+        f"/v1/users/{target_user_id}/permissions",
+        params={"organization_id": org_id},
+        headers=_auth_header(admin_token),
+    )
+    assert after.json() == []

@@ -1,16 +1,26 @@
 """
 Dependency wiring tests.
 
-Confirms get_auth_service() / get_authorization_service() actually construct
-their respective services wired to real repository instances sharing the
-same session -- catching, for example, a typo that accidentally wires the
-wrong repository class, or a change that breaks the dependency chain
-silently (still returns *something*, just not the right thing).
+Confirms get_auth_service() / get_authorization_service() /
+get_organization_service() actually construct their respective services
+wired to real repository instances sharing the same session -- catching,
+for example, a typo that accidentally wires the wrong repository class, or
+a change that breaks the dependency chain silently (still returns
+*something*, just not the right thing).
 """
 
-from app.core.dependencies import get_auth_service, get_authorization_service
+from app.core.dependencies import (
+    get_auth_service,
+    get_authorization_service,
+    get_organization_service,
+)
 from app.domain.services.auth_service import AuthService
 from app.domain.services.authorization_service import AuthorizationService
+from app.domain.services.organization_service import OrganizationService
+from app.repositories.organization_membership_repository import (
+    OrganizationMembershipRepository,
+)
+from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.permission_repository import PermissionRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.role_repository import RoleRepository
@@ -43,6 +53,10 @@ async def test_get_authorization_service_returns_correctly_wired_instance(test_s
     assert isinstance(service.role_repository, RoleRepository)
     assert isinstance(service.permission_repository, PermissionRepository)
     assert isinstance(service.user_role_repository, UserRoleRepository)
+    assert isinstance(service.organization_repository, OrganizationRepository)
+    assert isinstance(
+        service.organization_membership_repository, OrganizationMembershipRepository
+    )
 
 
 async def test_get_authorization_service_repositories_share_the_same_session(test_session):
@@ -52,3 +66,24 @@ async def test_get_authorization_service_repositories_share_the_same_session(tes
     assert service.role_repository.session is test_session
     assert service.permission_repository.session is test_session
     assert service.user_role_repository.session is test_session
+    assert service.organization_repository.session is test_session
+    assert service.organization_membership_repository.session is test_session
+
+
+async def test_get_organization_service_returns_correctly_wired_instance(test_session):
+    service = await get_organization_service(session=test_session)
+
+    assert isinstance(service, OrganizationService)
+    assert isinstance(service.organization_repository, OrganizationRepository)
+    assert isinstance(
+        service.organization_membership_repository, OrganizationMembershipRepository
+    )
+    assert isinstance(service.user_repository, UserRepository)
+
+
+async def test_get_organization_service_repositories_share_the_same_session(test_session):
+    service = await get_organization_service(session=test_session)
+
+    assert service.organization_repository.session is test_session
+    assert service.organization_membership_repository.session is test_session
+    assert service.user_repository.session is test_session

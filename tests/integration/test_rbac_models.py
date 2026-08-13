@@ -263,6 +263,10 @@ async def test_seed_migration_created_expected_permission_catalog(test_session):
 
 
 async def test_seed_migration_admin_role_has_all_permissions(test_session):
+    """"All permissions" as of the latest seed migration that grants any to
+    Admin -- Phase 3.4 added organization:manage (see
+    97122fa13dcc_seed_organization_manage_permission.py) on top of the
+    original five from this migration."""
     result = await test_session.execute(
         select(Permission.resource, Permission.action)
         .join(role_permissions, role_permissions.c.permission_id == Permission.id)
@@ -276,6 +280,7 @@ async def test_seed_migration_admin_role_has_all_permissions(test_session):
         ("document", "delete"),
         ("role", "manage"),
         ("user", "manage"),
+        ("organization", "manage"),
     }
 
 
@@ -288,3 +293,16 @@ async def test_seed_migration_intern_role_has_only_document_view(test_session):
     )
     intern_permissions = {(row[0], row[1]) for row in result.fetchall()}
     assert intern_permissions == {("document", "view")}
+
+
+async def test_seed_migration_organization_manage_permission_granted_only_to_admin(test_session):
+    """Phase 3.4 addition (97122fa13dcc): organization:manage exists and
+    is granted to Admin only, not any of the other three default roles."""
+    result = await test_session.execute(
+        select(Role.name)
+        .join(role_permissions, role_permissions.c.role_id == Role.id)
+        .join(Permission, Permission.id == role_permissions.c.permission_id)
+        .where(Permission.resource == "organization", Permission.action == "manage")
+    )
+    granted_to = {row[0] for row in result.fetchall()}
+    assert granted_to == {"Admin"}
