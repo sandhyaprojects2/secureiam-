@@ -163,6 +163,115 @@ async def test_create_rotation_pair_links_old_and_new_tokens(test_session):
     assert new_token.user_id == user.id
 
 
+async def test_create_rotation_pair_second_concurrent_call_returns_none(test_session):
+    """Phase 5: deterministic proof of the atomic-conditional-update
+    guarantee, with zero concurrency or timing involved at all. Two
+    sequential calls to create_rotation_pair() against the SAME old_token
+    prove the exact same thing test_concurrent_refresh_with_same_token_
+    only_one_succeeds proves via real asyncio.gather concurrency --
+    because the guarantee itself doesn't depend on timing: the first call's
+    `UPDATE ... WHERE revoked_at IS NULL` unconditionally wins (the row was
+    unrevoked), and the second call's identical statement is guaranteed to
+    affect zero rows no matter when it runs, since the first call already
+    committed the revoke."""
+    user_repo = UserRepository(test_session)
+    token_repo = RefreshTokenRepository(test_session)
+    user = await user_repo.create_user("rotationrace@example.com", "hash")
+    old_token = await token_repo.create(user.id, "1" * 64, utc_now() + timedelta(days=14))
+
+    first = await token_repo.create_rotation_pair(
+        old_token, "2" * 64, utc_now() + timedelta(days=14)
+    )
+    second = await token_repo.create_rotation_pair(
+        old_token, "3" * 64, utc_now() + timedelta(days=14)
+    )
+
+    assert first is not None
+    assert second is None
+
+    # The loser must not have created an orphaned child token -- exactly
+    # one descendant of old_token exists.
+    result = await test_session.execute(
+        select(RefreshToken).where(RefreshToken.user_id == user.id)
+    )
+    all_tokens = result.scalars().all()
+    assert len(all_tokens) == 2  # old_token + first's new_token only
+    assert {t.token_hash for t in all_tokens} == {"1" * 64, "2" * 64}
+
+
+async def test_create_rotation_pair_already_revoked_token_returns_none(test_session):
+    """A token revoked by any means (here, logout's plain revoke()) before
+    create_rotation_pair() is attempted must be rejected the same way as a
+    concurrent-loss case -- the WHERE clause doesn't care why revoked_at
+    was already set."""
+    user_repo = UserRepository(test_session)
+    token_repo = RefreshTokenRepository(test_session)
+    user = await user_repo.create_user("alreadyrevoked@example.com", "hash")
+    token = await token_repo.create(user.id, "4" * 64, utc_now() + timedelta(days=14))
+    await token_repo.revoke(token)
+
+    result = await token_repo.create_rotation_pair(
+        token, "5" * 64, utc_now() + timedelta(days=14)
+    )
+
+    assert result is None
+
+
+# --- RefreshTokenRepository.revoke_descendants() (Phase 5) ---------------------------------------------------
+
+async def test_revoke_descendants_revokes_the_current_leaf(test_session):
+    user_repo = UserRepository(test_session)
+    token_repo = RefreshTokenRepository(test_session)
+    user = await user_repo.create_user("descendants@example.com", "hash")
+    token_a = await token_repo.create(user.id, "6" * 64, utc_now() + timedelta(days=14))
+    token_b = await token_repo.create_rotation_pair(
+        token_a, "7" * 64, utc_now() + timedelta(days=14)
+    )
+    token_c = await token_repo.create_rotation_pair(
+        token_b, "8" * 64, utc_now() + timedelta(days=14)
+    )
+    await test_session.refresh(token_a)
+
+    revoked = await token_repo.revoke_descendants(token_a)
+
+    assert revoked is not None
+    assert revoked.id == token_c.id
+    await test_session.refresh(token_c)
+    assert token_c.revoked_at is not None
+
+
+async def test_revoke_descendants_second_call_returns_none(test_session):
+    """Idempotency: once a family has been fully revoked by one
+    revoke_descendants() call, a second call against the same starting
+    token must find nothing left to revoke."""
+    user_repo = UserRepository(test_session)
+    token_repo = RefreshTokenRepository(test_session)
+    user = await user_repo.create_user("descendantstwice@example.com", "hash")
+    token_a = await token_repo.create(user.id, "9" * 64, utc_now() + timedelta(days=14))
+    await token_repo.create_rotation_pair(token_a, "a1" * 32, utc_now() + timedelta(days=14))
+    await test_session.refresh(token_a)
+
+    first = await token_repo.revoke_descendants(token_a)
+    second = await token_repo.revoke_descendants(token_a)
+
+    assert first is not None
+    assert second is None
+
+
+async def test_revoke_descendants_no_successor_returns_none(test_session):
+    """A token with no replaced_by (never rotated -- e.g. logged out, or
+    simply never used) has no family to walk. Defensive no-op, not an
+    error."""
+    user_repo = UserRepository(test_session)
+    token_repo = RefreshTokenRepository(test_session)
+    user = await user_repo.create_user("nosuccessor@example.com", "hash")
+    token = await token_repo.create(user.id, "b2" * 32, utc_now() + timedelta(days=14))
+
+    result = await token_repo.revoke_descendants(token)
+
+    assert result is None
+
+
 async def test_deleting_user_cascades_refresh_tokens(test_session):
     user_repo = UserRepository(test_session)
     token_repo = RefreshTokenRepository(test_session)

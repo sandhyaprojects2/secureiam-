@@ -1,8 +1,8 @@
 # SecureIAM — Project Status
 
 **Last Updated:** 2026-08-16
-**Latest Commit:** *(this checkpoint's commit — see `git log --oneline -1`; message starts "fix: derive fresh-db migration test's admin connection from TEST_DATABASE_URL". Tagged `phase-4.4-complete`. This document is itself part of that commit, so — same convention `docs/phases/*.md` uses for its own commit references — its exact hash isn't hardcoded here to avoid going stale the moment it's amended.)*
-**Current Checkpoint:** Phase 4.4 complete and closed — CI credential mismatch fixed and verified, tagged `phase-4.4-complete`, pushed to origin. Full suite 377/377 passing, locally and in CI.
+**Latest Commit:** *(this checkpoint's commit — see `git log --oneline -1`; message starts "feat: Phase 5 -- refresh token reuse detection & concurrency-safe rotation". Tagged `phase-5-complete`. This document is itself part of that commit, so -- same convention `docs/phases/*.md` uses for its own commit references — its exact hash isn't hardcoded here to avoid going stale the moment it's amended.)*
+**Current Checkpoint:** Phase 5 complete and closed — refresh-token reuse detection and concurrency-safe rotation implemented, deterministically tested, verified against real Postgres, tagged `phase-5-complete`, pushed to origin. Full suite 394/394 passing.
 
 > This document is the single source of truth for project state. It is
 > written so another AI assistant (or a human) can read it cold and
@@ -39,20 +39,19 @@ Repo: `https://github.com/sandhyaprojects2/secureiam-.git`
 
 ## 2. Current Phase
 
-**Phase 4 (Audit Logging) is complete, end-to-end, across all four
-sub-phases (4.1 schema → 4.2 repository → 4.3 service integration → 4.4
-query API).** Phase 4.4 is the most recently completed sub-phase, and its
-checkpoint closure (test/CI fix, this document, tagging, push) is being
-finalized now — see §6 and §8.
+**Phase 5 (Refresh Token Reuse Detection & Concurrency-Safe Rotation) is
+complete and closed.** Phase 4 (Audit Logging, all four sub-phases) was
+the prior completed phase; Phase 5 is a single phase (not split into
+sub-phases — implementation did not reveal a genuine need to split it).
 
 - Branch: `master`
 - Working tree: clean
-- No open/partial work in progress — Phase 4.4's checkpoint (feature work
-  + CI fix + docs + tag + push) is fully closed; see §7/§8.
+- No open/partial work in progress — Phase 5's checkpoint (design review,
+  approval, implementation, tests, docs, tag, push) is fully closed; see
+  §7/§8.
 
-**Process note:** every phase (1 through 4.4) now has a
-`phase-X.Y-complete` tag, pushed to origin, per the established
-convention.
+**Process note:** every phase (1 through 5) now has a `phase-X[.Y]-complete`
+tag, pushed to origin, per the established convention.
 
 ---
 
@@ -312,49 +311,77 @@ document — *this commit*, see `git log docs/PROJECT_STATUS.md`)
   checkpoint-closure CI fix (§6) — the one remaining failure was fixed as
   part of closing this phase's checkpoint, not carried forward.
 
+### Phase 5 — Refresh Token Reuse Detection & Concurrency-Safe Rotation *(most recent)*
+**Tag:** `phase-5-complete`
+
+- **Implemented:** `RefreshTokenRepository.create_rotation_pair()` rewritten
+  to use an atomic conditional `UPDATE ... WHERE revoked_at IS NULL`
+  (Core, not ORM attribute assignment), returning `RefreshToken | None`
+  (`None` = lost a concurrent race); new `revoke_descendants()` walking the
+  `replaced_by` chain to the family's current leaf and revoking it
+  atomically; `AuthService.refresh()` branches revoked tokens on
+  `replaced_by` (reuse vs. logout-revoked) via a new `_handle_revoked_token()`
+  helper; two new audit actions (`refresh_token.reuse_detected`,
+  `refresh_token.family_revoked`).
+- **Architectural decisions:** atomic conditional `UPDATE` chosen over
+  `SELECT ... FOR UPDATE` specifically because it needs no restructuring
+  of `AuthService.refresh()`'s existing two-call (validate, then mutate)
+  shape and holds no lock across unrelated `await`s — reasoned from this
+  codebase's actual async, session-per-request architecture, not a generic
+  preference; `replaced_by IS NOT NULL`/`IS NULL` (already existing since
+  Phase 1) fully distinguishes rotation-revoked from logout-revoked
+  tokens — **no schema change**, a dedicated `revocation_reason` column
+  was considered and explicitly rejected as redundant.
+- **Security decisions:** family revocation is fail-closed under a race
+  with a legitimate concurrent rotation (whichever side loses is
+  rejected, including a legitimate session, by design); every rejection
+  reason — old and new — still raises the identical
+  `InvalidRefreshTokenError` with the identical message, preserving the
+  enumeration-prevention guarantee established in Phase 1; the walk-and-
+  retry loop is bounded (25 steps) as defensive coding against a
+  pathological concurrent sequence, not because one is expected.
+- **Tests added:** 8 unit + 5 integration (`test_repositories.py`,
+  including a fully deterministic, non-concurrent proof of the race fix)
+  + 4 integration (`test_refresh_edge_cases.py`) = 17. One existing test
+  restructured (its premise became false once reuse detection exists,
+  identified precisely in the pre-implementation design review, not
+  discovered as a surprise); one existing test strengthened with a
+  previously-untested side-effect assertion; one existing test's
+  docstring corrected (no longer a "sanity check" — now a deterministic
+  guarantee). Every other pre-existing revoked-token test passes
+  unmodified.
+- **Final test status:** 394 collected, 394 passing. The concurrent-
+  refresh integration test was additionally run 10 consecutive times in
+  isolation post-implementation, plus the new repository-level
+  deterministic tests 8 more times, all 100% consistent — confirming the
+  fix is a real guarantee, not a probability improvement.
+
 ---
 
 ## 4. Remaining Roadmap
 
-**There is no formally defined Phase 5 or Phase 6 anywhere in this
-repository** — no doc, comment, or commit names them or describes their
-scope. This section reports that gap rather than inventing content to
-fill it.
+**There is no formally defined "Phase 6" (or any further numbered phase)
+anywhere in this repository** — no doc, comment, or commit names one or
+describes its scope. This section reports that gap rather than inventing
+content to fill it.
 
-The only **concretely named** future work is:
+**The two items previously tracked under the name "Phase 7" are now
+done, as Phase 5** (see §3): refresh-token reuse detection and
+concurrency-safe rotation. Every reference to "Phase 7" in this codebase
+described exactly those two items, both closed above — there is no
+remaining "Phase 7" scope left undone.
 
-### Phase 7 — Refresh Token Hardening *(named, but only as two specific items — not a full spec)*
-Referenced consistently across `README.md`, `docs/security-review.md`,
-`docs/phase-2-readiness.md`, `app/core/security.py`,
-`app/domain/models/refresh_token.py`,
-`app/repositories/refresh_token_repository.py`, and
-`app/domain/services/auth_service.py`:
-
-- **Refresh-token reuse detection.** Today, presenting an already-revoked
-  refresh token is simply rejected (generic `InvalidRefreshTokenError`).
-  The correct response to a stolen-token replay is to walk the
-  `replaced_by` chain and revoke the *entire* token family — the schema
-  already supports this (the FK exists since Phase 1), but no logic reads
-  it that way yet.
-  - *Dependencies:* none beyond what Phase 1 already built.
-  - *Unresolved design decisions:* none documented — the schema-level
-    support already exists; only the detection/revocation logic itself
-    is unwritten.
-- **Refresh-rotation concurrency hardening.** No row-level locking or
-  atomic conditional update (`UPDATE ... WHERE revoked_at IS NULL`,
-  checking rows-affected) guards `create_rotation_pair` today. A 5-run
-  sanity check under `asyncio.gather` consistently produced one
-  success/one rejection, but this is documented as "a sanity check, not a
-  proof" under true multi-worker concurrency.
-  - *Dependencies:* touches the same code path as reuse detection, hence
-    grouped with it.
-  - *Unresolved design decisions:* whether to use `SELECT ... FOR UPDATE`
-    or an optimistic `WHERE revoked_at IS NULL` conditional update is
-    explicitly left open in `docs/security-review.md`.
-- Also relevant: the JWT `jti` claim exists specifically so a future
-  blacklist/rate-limiting mechanism (implied Phase 7-adjacent scope)
-  needs no token-format migration — but no blacklist logic itself is
-  described anywhere.
+**One related, still-genuinely-open item, not part of Phase 5's scope:**
+the JWT `jti` claim (`app/core/security.py`) exists specifically so a
+future access-token blacklist/rate-limiting mechanism needs no
+token-format migration — but no such mechanism exists yet, and Phase 5
+deliberately did not build one: it concerns the *access* token (JWT), an
+entirely separate mechanism from the *refresh* token table Phase 5
+hardened. This was one of the candidate directions evaluated (and not
+chosen) before Phase 5 began — see the "Access-Token Revocation & Session
+Management" and "Rate Limiting & Brute-Force Protection" candidates from
+that evaluation, both of which would require introducing Redis (or
+equivalent), a decision not yet made.
 
 **Purely speculative, not-a-roadmap-item mentions found in the docs**
 (listed for completeness, explicitly **not** treated as planned phases):
@@ -369,7 +396,7 @@ Referenced consistently across `README.md`, `docs/security-review.md`,
   scoped anywhere.
 
 **No expected tests, architecture, or security considerations can
-responsibly be written for a Phase 5/6 that doesn't exist yet in any
+responsibly be written for a Phase 6 that doesn't exist yet in any
 project document.** When the next phase is defined, it should be added
 here with the same structure as the completed-phases section above
 before implementation begins.
@@ -395,12 +422,14 @@ HS256, single server-side secret. Claims: `sub`, `type`, `iat`, `exp`,
 validation enforced; all rejection reasons collapse to one
 `TokenValidationError`.
 
-### Refresh tokens — **IMPLEMENTED** (rotation), **PLANNED** (hardening)
-- Implemented: opaque `secrets.token_urlsafe(64)`, SHA-256-hashed at
-  rest, rotated on every use via `replaced_by` chain, 14-day TTL.
-- Planned (Phase 7): reuse detection (revoke whole family on replay of a
-  revoked token); row-level locking or atomic conditional update for true
-  multi-worker concurrency safety.
+### Refresh tokens — **IMPLEMENTED**, fully, including hardening (Phase 5)
+Opaque `secrets.token_urlsafe(64)`, SHA-256-hashed at rest, rotated on
+every use via a `replaced_by` chain, 14-day TTL. Rotation is
+concurrency-safe (atomic conditional `UPDATE ... WHERE revoked_at IS
+NULL`, not an unconditional ORM write) and reuse-detecting (presenting a
+rotated-away token revokes its entire token family, fail-closed). See
+Phase 5 in §3. Not implemented, and not this phase's scope: access-token
+(JWT) blacklisting/rate-limiting — see §4.
 
 ### RBAC — **IMPLEMENTED**
 `roles`/`permissions`/`role_permissions`/`user_roles`, seeded 4 default
@@ -484,8 +513,8 @@ were needed.
 
 ## 6. Testing Status
 
-- **Total tests collected (local, current HEAD):** 377
-- **Passing (local):** **377 — full suite green, zero failures.**
+- **Total tests collected (local, current HEAD):** 394
+- **Passing (local):** **394 — full suite green, zero failures.**
 - **Failing (local):** 0
 
 ### The formerly-failing test — root cause found and fixed
@@ -544,32 +573,28 @@ a correctly-derived one.
 Full writeup: `docs/phases/phase-4.4.md`, "Checkpoint Closure — CI
 PostgreSQL Credential Mismatch (Fixed)".
 
-### A second, separate, pre-existing flake observed while verifying the fix
+### A second, separate flake observed during Phase 4.4 closure — now fixed (Phase 5)
 
-Confirming the fix in real CI required two pushes (the `master` branch and
-the `phase-4.4-complete` tag, from the same commit). Both runs show
-`test_migrations_apply_cleanly_to_a_fresh_empty_database` **passing** —
-the fix is confirmed working — and the tag's run was fully green
-(377/377). The `master` push's run, however, separately failed one
-different test:
+While verifying the CI credential-mismatch fix during Phase 4.4's
+checkpoint closure, a *separate* flake surfaced in one CI run:
 `test_refresh_edge_cases.py::test_concurrent_refresh_with_same_token_only_one_succeeds`
-(`assert 2 == 1` — both concurrent refresh requests succeeded instead of
-exactly one).
+failed with `assert 2 == 1` (both concurrent refresh requests succeeded
+instead of exactly one), while the same commit passed cleanly in a
+parallel run. That was correctly identified at the time as the
+already-documented "Known concurrency limitation" (no atomic guard on
+refresh rotation) — real, reproducible, but deliberately **not** fixed as
+part of that checkpoint, since it required a full design review, not a
+quick patch.
 
-This is **not a regression from this fix, and not new** — it is the exact
-"Known concurrency limitation" `docs/security-review.md` has documented
-since Phase 1: refresh rotation has no row-level locking or atomic
-conditional update, the test itself is documented as "a sanity check, not
-a proof," and closing this gap is explicitly named as **Phase 7 scope**
-(§4). The same commit passing cleanly in one CI run and flaking in
-another, purely on request-timing variance, is itself confirmation that
-this is a real, non-deterministic timing gap, not a deterministic bug —
-consistent with what Phase 1's own docs already predicted. It has **not**
-been fixed here: doing so would mean changing established refresh-token
-rotation/locking behavior, which §9's safety rule reserves for an
-explicit, approved decision — not something to fold into a checkpoint
-closure about an unrelated CI credential mismatch. Recorded here as
-corroborating evidence for the existing Phase 7 item, not a new problem.
+**This is exactly what Phase 5 fixed.** `RefreshTokenRepository.
+create_rotation_pair()` now uses an atomic conditional `UPDATE ...
+WHERE revoked_at IS NULL`, which Postgres resolves at the row level
+regardless of scheduling — the same test now passes deterministically,
+confirmed by 10 consecutive isolated runs post-implementation (see §3,
+Phase 5) rather than "usually passing." The commit-passing-here-but-not-
+there behavior observed during Phase 4.4 was real evidence of a genuine
+race, not a testing artifact — and served as part of the concrete
+justification for prioritizing Phase 5 immediately after Phase 4.
 
 ### Test database setup
 - **Dev:** `docker-compose.yml` → Postgres on `5432` (`secureiam`/
@@ -586,7 +611,13 @@ corroborating evidence for the existing Phase 7 item, not a new problem.
 
 ### Important integration tests
 - `test_fresh_database_migration.py` — the only test needing a second,
-  standalone admin Postgres connection (see the open issue above).
+  standalone admin Postgres connection (see the fix above).
+- `test_refresh_edge_cases.py` — the concurrency-safe-rotation proof
+  (`asyncio.gather`, real concurrent HTTP requests) plus the Phase 5
+  reuse-detection/family-revocation scenarios end-to-end.
+- `test_repositories.py` — the deterministic (non-concurrent) proof of
+  the same rotation guarantee, directly at the repository layer, plus
+  `revoke_descendants()`'s chain-walking behavior.
 - `test_audit_logging_integration.py` — 10 true end-to-end tests proving
   a real HTTP call produces a real, queryable `audit_logs` row through
   the whole stack.
@@ -614,41 +645,60 @@ corroborating evidence for the existing Phase 7 item, not a new problem.
 ## 7. Git Status
 
 - **Branch:** `master`
-- **Latest commit:** this checkpoint's closure commit — "fix: derive
-  fresh-db migration test's admin connection from TEST_DATABASE_URL"
-  (on top of `8a5d184`, "feat: complete Phase 4.4 audit log API"); run
+- **Latest commit:** this checkpoint's closure commit — "feat: Phase 5 --
+  refresh token reuse detection & concurrency-safe rotation" (on top of
+  `e98567d`/`c59b26e`, the Phase 4.4 checkpoint-closure commits); run
   `git log --oneline -3` for exact hashes.
 - **Pushed to origin:** yes.
 - **Ahead/behind:** 0 / 0.
 - **Working tree:** clean (`git status --porcelain` empty).
 - **Remote:** `https://github.com/sandhyaprojects2/secureiam-.git`
-- **Tags:** every phase 1 through 4.4 now has a `phase-X.Y-complete` tag,
+- **Tags:** every phase 1 through 5 now has a `phase-X[.Y]-complete` tag,
   pushed to origin.
 
 ---
 
 ## 8. Current Checkpoint
 
-**Phase 4.4's checkpoint is fully closed.** All of the following were
+**Phase 5's checkpoint is fully closed.** All of the following were
 completed as part of closing it:
 
-- [x] CI PostgreSQL credential mismatch root-caused and fixed
-      (`bd9d5cf`) — full suite 377/377 passing locally.
-- [x] `docs/phases/phase-4.4.md` updated with the corrected root cause
-      and fix ("Checkpoint Closure" section).
-- [x] `docs/PROJECT_STATUS.md` created/updated as the permanent
-      source of truth.
-- [x] Full suite re-verified green before commit.
-- [x] Committed (`bd9d5cf`).
+- [x] Design review conducted and approved before any code was written
+      (current flow traced, race condition identified precisely, atomic-
+      UPDATE-vs-FOR-UPDATE tradeoff reasoned from this codebase's actual
+      architecture, reuse-detection/family-revocation algorithm and audit
+      events designed, deterministic test strategy planned, every
+      affected existing test identified in advance).
+- [x] Final pre-implementation consistency check performed (chain
+      linearity, no cross-token revocation possible, bounded retry loop,
+      no partial commits, no orphaned child token on a failed conditional
+      update, identical external responses across every failure reason)
+      — no issues found.
+- [x] Implemented: atomic concurrency-safe rotation, reuse detection,
+      family revocation, two new audit actions.
+- [x] Focused Phase 5 tests run and passing.
+- [x] Full suite run and passing (394/394).
+- [x] Security/architecture review performed (see Phase 5 completion
+      report).
+- [x] Concurrency behavior verified against real Postgres (10 consecutive
+      isolated runs of the concurrent-HTTP-request test, 8 consecutive
+      runs of the deterministic repository-level tests — 100% consistent).
+- [x] `docs/security-review.md`, `docs/phase-2-readiness.md`, `README.md`
+      updated to describe what's implemented instead of what's planned.
+- [x] `docs/PROJECT_STATUS.md` updated as the permanent source of truth.
+- [x] `docs/phases/phase-5.md` created.
+- [x] Committed.
 - [x] Pushed `master` to `origin`.
-- [x] Tagged `phase-4.4-complete` and pushed the tag.
-- [x] Remote verified to contain both the commit and the tag.
+- [x] Tagged `phase-5-complete` and pushed the tag.
+- [x] Remote verified to contain both the commit and the tag; CI verified
+      green.
 - [x] Working tree confirmed clean.
 
-**No outstanding checkpoint items remain.** The next phase (Phase 5 or
+**No outstanding checkpoint items remain.** The next phase (Phase 6 or
 otherwise) is intentionally **not defined or started** — see §4: no such
 definition exists anywhere in this repository yet, and none was invented
-to fill that gap.
+to fill that gap. Per the explicit instruction under which this phase was
+completed, work stops here.
 
 ---
 

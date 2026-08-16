@@ -94,11 +94,14 @@ in `app/core/security.py`.
   deactivated accounts during login (see `docs/security-review.md` for
   detail). Not a Phase 2 blocker, but worth revisiting if the threat model
   tightens.
-- **Refresh rotation lacks row-level locking or optimistic concurrency
-  control.** A repeated sanity check suggests this doesn't cause observable
-  double-rotation in this environment, but it isn't a proven guarantee
-  under true multi-worker concurrency. Recommended as part of Phase 7
-  hardening, alongside reuse detection (both touch `create_rotation_pair`).
+- ~~**Refresh rotation lacks row-level locking or optimistic concurrency
+  control.**~~ **Closed in Phase 5** (`docs/phases/phase-5.md`): rotation
+  now uses an atomic conditional `UPDATE ... WHERE revoked_at IS NULL`,
+  which Postgres itself resolves at the row level regardless of
+  scheduling -- a deterministic guarantee, not a repeated sanity check.
+  Phase 5 also added refresh-token reuse detection (family revocation),
+  which was tracked alongside this item since both touch
+  `create_rotation_pair`.
 - **`get_current_user` does not check `user.is_active`.** A deactivated
   user's still-valid (≤15 minute) access token continues to resolve
   successfully until natural expiry. Reasonable for Phase 1's scope, but

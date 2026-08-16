@@ -69,30 +69,48 @@ against an attack that isn't the actual threat model for this value. SHA-256
 gives a fast, deterministic, collision-resistant lookup key, which is
 exactly what's needed.
 
-**Rotation behavior (Phase 1 scope):** every successful `/refresh` call
-revokes the presented token and issues a brand-new one, linked via
-`replaced_by`. A revoked, expired, or unknown token is rejected with an
-identical, generic error. **Not yet implemented:** reuse detection — if an
-already-revoked token is presented again, Phase 1 simply rejects it as
-invalid; it does not walk the `replaced_by` chain to revoke the entire
-token family, which would be the correct response to a stolen-token replay
-scenario. The schema (`replaced_by` foreign key) already supports this; the
-detection *logic* is Phase 7 scope.
+**Rotation behavior:** every successful `/refresh` call revokes the
+presented token and issues a brand-new one, linked via `replaced_by`. A
+revoked, expired, or unknown token is rejected with an identical, generic
+error.
 
-**Known concurrency limitation:** the current rotation logic does not use
-row-level locking (`SELECT ... FOR UPDATE`) or an optimistic-concurrency
-check (e.g. `UPDATE ... WHERE revoked_at IS NULL`) when revoking the old
-token during rotation. A repeated concurrency sanity test in this sandbox
-(5 consecutive runs, `asyncio.gather` firing two simultaneous refresh
-requests with the same token) consistently produced exactly one success and
-one rejection — but this is a **sanity check, not a proof**. It's plausible
-this result is partly an artifact of single-process async scheduling rather
-than a guarantee that holds under true multi-worker, multi-connection
-concurrency in production. Adding an atomic conditional update
-(`UPDATE refresh_tokens SET revoked_at = now() WHERE id = :id AND
-revoked_at IS NULL`, checking rows-affected) would close this gap
-definitively, and is recommended as part of Phase 7 hardening alongside
-reuse detection, since both touch the same code path.
+**Reuse detection (Phase 5):** presenting a token that was already revoked
+*via rotation* (i.e. one with `replaced_by` set) is treated as evidence of
+a possible stolen-token replay, not merely an ordinary invalid token. The
+response walks the `replaced_by` chain forward to the family's current
+active leaf and revokes it too — fail-closed, on the assumption that
+either the legitimate holder or an attacker could be the one currently
+holding the live end of the chain, and the safer default is to kill it
+either way. This is recorded internally (`refresh_token.reuse_detected` on
+every such presentation; `refresh_token.family_revoked` only when a still-
+live leaf was actually killed as a result) but never exposed externally:
+the caller still receives the exact same generic rejection as any other
+invalid token. A revoked token *without* a successor (`replaced_by` is
+`None` — revoked via logout, never rotated) is explicitly **not** treated
+as reuse: that's the ordinary, harmless shape of a client using a token
+after the user already logged out, not evidence of anything. See
+`docs/phases/phase-5.md` for the full design, including why the family-
+revocation walk can never revoke an unrelated token (every node reached is
+provably part of the same, single-user, strictly linear chain) and why the
+walk-and-retry loop against a concurrently-racing legitimate rotation is
+bounded, not unbounded.
+
+**Concurrency-safe rotation (Phase 5):** the previous rotation logic
+revoked the old token via an unconditional ORM attribute assignment, with
+no guard against a second, concurrent caller doing the same thing to the
+same row — a genuine lost-update race under Postgres's default READ
+COMMITTED isolation, not merely a hypothetical one (it was reproduced
+live, intermittently, in this project's own CI). It's fixed now via an
+atomic conditional update, `UPDATE refresh_tokens SET revoked_at = now()
+WHERE id = :id AND revoked_at IS NULL`, checking rows-affected: Postgres
+itself guarantees at most one concurrent caller's update can ever affect
+the row, so at most one concurrent rotation of the same token can ever
+succeed. This is deterministic, not probabilistic — see
+`docs/phases/phase-5.md` for why an atomic conditional update was chosen
+over `SELECT ... FOR UPDATE` for this codebase's specific async,
+session-per-request architecture, and for the deterministic (non-timing-
+dependent) test that proves it directly at the repository layer, alongside
+the existing concurrent-HTTP-request integration test.
 
 ---
 
