@@ -15,8 +15,9 @@ from app.api.v1.organizations import router as organizations_router
 app = FastAPI(
     title="SecureIAM",
     description="Identity and Access Management platform — Phase 1 (Authentication) "
-    "+ Phase 2 (RBAC & Authorization) + Phase 3 (Multi-Tenancy) + Phase 4 (Audit Log)",
-    version="0.4.0",
+    "+ Phase 2 (RBAC & Authorization) + Phase 3 (Multi-Tenancy) + Phase 4 (Audit Log) "
+    "+ Phase 5 (Refresh-Token Reuse Detection & Concurrency-Safe Rotation)",
+    version="0.5.0",
 )
 
 app.include_router(auth_router)

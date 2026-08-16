@@ -1,5 +1,13 @@
 # SecureIAM — Phase 1 Architecture
 
+> This document is Phase 1's original architecture writeup, preserved as
+> written. For a current, whole-system view covering RBAC, multi-tenancy,
+> audit logging, and refresh-token security added in later phases, see
+> [`docs/architecture-overview.md`](architecture-overview.md). The
+> layering principle described below (API → Service → Repository →
+> Database) is unchanged and still applies to every subsystem added
+> since.
+
 This document explains how Phase 1's authentication system is layered, and
 — more importantly — *why* each layer exists and what it's forbidden from
 doing. The boundaries below were enforced throughout implementation, not

@@ -1,9 +1,13 @@
-# SecureIAM — Phase 1 Security Review
+# SecureIAM — Authentication & Refresh Token Security Review
 
-This document records the security-relevant decisions made in Phase 1
-(Authentication) and the reasoning behind each one. It's written to be
-readable on its own — by a reviewer, an interviewer, or future-you six
-months from now who's forgotten why a particular choice was made.
+This document records the security-relevant decisions made in the
+authentication and refresh-token subsystem (Phase 1, hardened further in
+Phase 5) and the reasoning behind each one. It's written to be readable on
+its own — by a reviewer, an interviewer, or future-you six months from now
+who's forgotten why a particular choice was made. RBAC/authorization,
+multi-tenancy, and audit-logging decisions are documented in their own
+phase docs under `docs/phases/`; see `docs/PROJECT_STATUS.md` for the
+full, current picture.
 
 ---
 
@@ -125,9 +129,11 @@ is simpler and equally secure for this trust model.
 
 **Claims:** `sub` (user id), `type` (`"access"`, self-describing in case
 other JWT-based token types are introduced later), `iat`, `exp`, `jti`
-(unique token id, unused in Phase 1 but present so Phase 7's
-blacklist/rate-limiting work needs no token-format migration), `iss`
-(issuer).
+(unique token id — not yet consumed by any current feature, reserved so a
+future access-token blacklist/rate-limiting mechanism would need no
+token-format migration; unlike refresh-token reuse detection, this is a
+separate, still-unimplemented mechanism — see `docs/PROJECT_STATUS.md`),
+`iss` (issuer).
 
 **Issuer validation:** `decode_access_token()` explicitly validates `iss`
 against the configured issuer. A token signed with the correct secret but a

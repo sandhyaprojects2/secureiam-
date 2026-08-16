@@ -69,8 +69,11 @@ def create_access_token(user_id: str) -> str:
                added via JWT later)
         iat  - issued-at
         exp  - expiry, per ACCESS_TOKEN_TTL_MINUTES
-        jti  - unique token id (unused in Phase 1, but present so Phase 7's
-               blacklist/rate-limiting work needs no token-format migration)
+        jti  - unique token id (not yet consumed by any current feature,
+               but present so a future access-token blacklist/rate-limiting
+               mechanism would need no token-format migration -- a separate,
+               still-unimplemented concern from refresh-token reuse
+               detection, which Phase 5 already implements)
         iss  - issuer, validated on decode
     """
     now = utc_now()
