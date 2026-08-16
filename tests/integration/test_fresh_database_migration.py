@@ -7,6 +7,34 @@ if they've drifted from what `alembic upgrade head` alone would produce.
 This creates a genuinely new, throwaway database, runs the real migration
 against it via subprocess (exactly as a CI runner or a new contributor
 would), inspects the resulting schema, then drops it.
+
+Admin connection, corrected: this test used to hardcode a *separate*
+superuser DSN (`postgres:postgres@localhost:5432`), on the assumption that
+a second, standalone Postgres instance -- distinct from the one every
+other integration test in this suite already uses via `TEST_DATABASE_URL`
+-- would be available to `CREATE DATABASE` against. That assumption was
+wrong in two different ways in the two environments that matter:
+  - Locally, nothing listens on 5432 at all in this sandbox (only the
+    `docker-compose.test.yml` instance on 5433 is running) -> connection
+    refused.
+  - In real GitHub Actions CI, a Postgres service container *is* running
+    on 5432, but `.github/workflows/test.yml` provisions it with
+    `secureiam`/`secureiam` credentials, not `postgres`/`postgres` ->
+    `InvalidPasswordError`. This was a genuine, silent CI failure on every
+    push since Phase 2.3, not merely a local-sandbox limitation.
+
+The fix: derive the admin connection from the exact same
+`TEST_DATABASE_URL` every other integration test already targets (see
+`tests/conftest.py`), just pointed at the server's always-present
+`postgres` maintenance database instead of the app's own database. The
+bootstrap role docker-compose.yml/docker-compose.test.yml/CI's workflow
+all create via `POSTGRES_USER` is a superuser (that's how Postgres's own
+docker image initializes it), so it always has `CREATEDB` privilege and a
+connection to `postgres` always exists -- there is no separate admin
+identity to configure, deduplicate, or keep in sync. This means the test
+now runs against whatever server the rest of the suite is already
+pointed at, with zero new environment variables and zero duplicated
+credentials.
 """
 
 import os
@@ -15,8 +43,26 @@ import uuid
 
 import asyncpg
 import pytest
+from sqlalchemy.engine import make_url
 
-ADMIN_DSN = "postgresql://postgres:postgres@localhost:5432/postgres"
+from tests.conftest import TEST_DATABASE_URL
+
+_test_db_url = make_url(TEST_DATABASE_URL)
+
+
+def _asyncpg_dsn(database: str) -> str:
+    """A plain libpq-style DSN (no `+asyncpg` driver suffix -- asyncpg.connect()
+    doesn't accept one) for `database`, on the same server/credentials as
+    `TEST_DATABASE_URL`."""
+    return _test_db_url.set(drivername="postgresql", database=database).render_as_string(
+        hide_password=False
+    )
+
+
+# A connection to the same server's always-present `postgres` maintenance
+# database, using the same credentials as every other integration test --
+# not a separate, hardcoded superuser identity.
+ADMIN_DSN = _asyncpg_dsn("postgres")
 
 
 @pytest.mark.asyncio
@@ -29,9 +75,7 @@ async def test_migrations_apply_cleanly_to_a_fresh_empty_database():
     finally:
         await admin_conn.close()
 
-    fresh_db_url = (
-        f"postgresql+asyncpg://postgres:postgres@localhost:5432/{db_name}"
-    )
+    fresh_db_url = _test_db_url.set(database=db_name).render_as_string(hide_password=False)
 
     try:
         result = subprocess.run(
@@ -47,9 +91,7 @@ async def test_migrations_apply_cleanly_to_a_fresh_empty_database():
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
-        check_conn = await asyncpg.connect(
-            dsn=f"postgresql://postgres:postgres@localhost:5432/{db_name}"
-        )
+        check_conn = await asyncpg.connect(dsn=_asyncpg_dsn(db_name))
         try:
             tables = await check_conn.fetch(
                 "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
