@@ -68,6 +68,9 @@ async def test_migrations_apply_cleanly_to_a_fresh_empty_database():
             assert "organizations" in table_names
             assert "organization_memberships" in table_names
 
+            # Phase 4 table.
+            assert "audit_logs" in table_names
+
             # pgcrypto must have been created by the migration itself, not
             # assumed to pre-exist on a fresh database.
             extensions = await check_conn.fetch(
@@ -97,6 +100,11 @@ async def test_migrations_apply_cleanly_to_a_fresh_empty_database():
                 "SELECT count(*) FROM roles WHERE organization_id IS NULL"
             )
             assert global_role_count == 4
+
+            # Phase 4: the audit log starts empty -- it's populated by
+            # application activity, never by a migration.
+            audit_log_count = await check_conn.fetchval("SELECT count(*) FROM audit_logs")
+            assert audit_log_count == 0
         finally:
             await check_conn.close()
 

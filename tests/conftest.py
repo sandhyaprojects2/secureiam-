@@ -38,14 +38,22 @@ async def test_session(test_engine) -> AsyncSession:
     commit real rows (e.g. creating a User) are idempotent across repeated
     runs instead of failing on stale data from a previous run. TRUNCATE ...
     CASCADE handles the users -> refresh_tokens FK relationship in one
-    statement, and (since Phase 2.1) also implicitly cascades to user_roles
-    (which references users.id) -- it does NOT touch roles, permissions, or
-    role_permissions, since those aren't downstream of users/refresh_tokens.
-    This is intentional: Phase 2's seeded roles/permissions are reference
-    data that should persist across tests, while per-test role *assignments*
-    (user_roles) are cleared along with the users they're assigned to.
-    Wrapped in a try/except so this fixture still works for modules (like
-    test_db_session.py) run before any migration has created these tables.
+    statement, and also implicitly cascades to every other table that
+    references users.id: user_roles (Phase 2.1), organization_memberships
+    (Phase 3.1), and audit_logs' actor_user_id (Phase 4.1) -- note that
+    TRUNCATE's CASCADE ignores each FK's own ON DELETE action (audit_logs'
+    is ON DELETE SET NULL, not CASCADE, but TRUNCATE CASCADE truncates the
+    referencing table outright regardless, since it operates at the
+    statement level to preserve referential integrity, not by simulating
+    what a DELETE would do). It does NOT touch roles, permissions,
+    role_permissions, or organizations, since none of those are downstream
+    of users/refresh_tokens. This is intentional: seeded/admin-created
+    reference data (roles, permissions, organizations) should persist
+    across tests, while per-test associations to a truncated user
+    (assignments, memberships, and that user's audit trail) are cleared
+    along with the user itself. Wrapped in a try/except so this fixture
+    still works for modules (like test_db_session.py) run before any
+    migration has created these tables.
     """
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with session_factory() as session:

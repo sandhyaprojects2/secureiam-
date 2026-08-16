@@ -28,6 +28,7 @@ from app.domain.models import (  # noqa: F401
     UserRole,
     Organization,
     OrganizationMembership,
+    AuditLog,
 )
 from app.domain.models.role_permission import role_permissions  # noqa: F401
 

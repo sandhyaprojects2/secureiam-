@@ -14,6 +14,7 @@ from app.domain.models.role_permission import role_permissions
 from app.domain.models.user_role import UserRole
 from app.domain.models.organization import Organization
 from app.domain.models.organization_membership import OrganizationMembership
+from app.domain.models.audit_log import AuditLog
 
 __all__ = [
     "User",
@@ -24,4 +25,5 @@ __all__ = [
     "UserRole",
     "Organization",
     "OrganizationMembership",
+    "AuditLog",
 ]
