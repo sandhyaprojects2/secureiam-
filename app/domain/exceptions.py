@@ -44,11 +44,22 @@ class InvalidRefreshTokenError(Exception):
     distinct underlying reasons:
       - the token does not exist in storage
       - the token has expired
-      - the token has already been revoked (including via rotation)
+      - the token has already been revoked via logout
+      - the token has already been revoked via rotation -- and, as of
+        Phase 5, presenting it again additionally triggers reuse detection
+        (the entire token family is revoked) as an internal side effect
+      - (Phase 5) this exact token was valid a moment ago but lost a
+        concurrent race to be rotated -- someone/something else revoked it
+        first between validation and the rotation attempt
 
     All of these MUST raise this same exception with the same message --
     distinguishing them would give an attacker a signal about whether a
-    guessed/stolen token value was ever valid.
+    guessed/stolen token value was ever valid. Phase 5's reuse-detection
+    response (family revocation) is real, audited, security-relevant
+    behavior, but it is never exposed through this exception -- only
+    through the internal audit trail (see
+    app/domain/audit_actions.py's REFRESH_TOKEN_REUSE_DETECTED/
+    REFRESH_TOKEN_FAMILY_REVOKED).
     """
     pass
 

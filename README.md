@@ -173,8 +173,9 @@ In summary:
   security benefit)
 - **JWT access tokens (HS256, 15-minute TTL)** with issuer validation and
   required-claim enforcement
-- **Refresh token rotation** on every use, with the schema already in place
-  for Phase 7's reuse-detection logic
+- **Refresh token rotation** on every use, atomic and concurrency-safe
+  (Phase 5), with reuse detection: presenting a rotated-away token revokes
+  its entire token family
 - **Enumeration prevention**: unknown-email and wrong-password produce an
   identical login response; unknown/expired/revoked refresh tokens produce
   an identical refresh response

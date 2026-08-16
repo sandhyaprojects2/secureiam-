@@ -37,9 +37,11 @@ class RefreshToken(Base):
     expires_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Self-referential FK forming the rotation chain. Not yet used for
-    # reuse-detection logic in Phase 1 — that's Phase 7 — but the schema
-    # supports it now so no migration is needed later.
+    # Self-referential FK forming the rotation chain. Not used for
+    # reuse-detection logic until Phase 5 (see RefreshTokenRepository.
+    # revoke_descendants()) -- this column was added in Phase 1 specifically
+    # so that logic could be built later with no migration needed, which is
+    # exactly what happened: Phase 5 required zero schema changes.
     replaced_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("refresh_tokens.id"),

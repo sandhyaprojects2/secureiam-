@@ -140,6 +140,12 @@ async def test_refresh_rotates_tokens(client):
 
 
 async def test_old_refresh_token_rejected_after_rotation(client):
+    """Phase 5: presenting old_refresh_token again here is reuse (it has a
+    successor from the rotation above) -- this now also revokes that
+    successor as a fail-closed side effect, asserted explicitly below
+    rather than left as an untested side effect of this test's own
+    sequence of calls (see test_refresh_edge_cases.py's dedicated
+    reuse-detection tests for the full behavior)."""
     email = unique_email("oldtoken")
     await client.post("/v1/auth/register", json={"email": email, "password": "correcthorsebattery"})
     login_response = await client.post(
@@ -147,13 +153,22 @@ async def test_old_refresh_token_rejected_after_rotation(client):
     )
     old_refresh_token = login_response.json()["refresh_token"]
 
-    await client.post("/v1/auth/refresh", json={"refresh_token": old_refresh_token})
+    rotate_response = await client.post(
+        "/v1/auth/refresh", json={"refresh_token": old_refresh_token}
+    )
+    successor_token = rotate_response.json()["refresh_token"]
+
     reuse_response = await client.post(
         "/v1/auth/refresh", json={"refresh_token": old_refresh_token}
     )
 
     assert reuse_response.status_code == 401
     assert reuse_response.json() == {"detail": "Invalid or expired refresh token."}
+
+    successor_response = await client.post(
+        "/v1/auth/refresh", json={"refresh_token": successor_token}
+    )
+    assert successor_response.status_code == 401
 
 
 async def test_refresh_invalid_token_returns_401(client):

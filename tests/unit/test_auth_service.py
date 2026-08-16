@@ -49,15 +49,16 @@ def make_fake_token(
     user_id=None,
     revoked=False,
     expired=False,
+    replaced_by=None,
 ):
     now = utc_now()
     return SimpleNamespace(
         id=uuid.uuid4(),
         user_id=user_id or uuid.uuid4(),
         token_hash="a" * 64,
-        revoked_at=now if revoked else None,
+        revoked_at=now if (revoked or replaced_by is not None) else None,
         expires_at=(now - timedelta(days=1)) if expired else (now + timedelta(days=14)),
-        replaced_by=None,
+        replaced_by=replaced_by,
     )
 
 
@@ -236,6 +237,10 @@ async def test_refresh_valid_token_rotates_successfully(service):
     fake_token = make_fake_token(user_id=fake_user.id)
     token_repo.get_by_hash.return_value = fake_token
     user_repo.get_by_id.return_value = fake_user
+    # Phase 5: create_rotation_pair() now returns RefreshToken | None --
+    # explicitly return a real fake token here (the happy path), rather
+    # than relying on AsyncMock's default truthy-but-not-None return.
+    token_repo.create_rotation_pair.return_value = make_fake_token(user_id=fake_user.id)
 
     result = await svc.refresh("some-raw-refresh-token")
 
@@ -298,6 +303,148 @@ async def test_refresh_failure_reasons_are_indistinguishable(service):
         await svc.refresh("t3")
 
     assert str(unknown_exc.value) == str(expired_exc.value) == str(revoked_exc.value)
+
+
+# --- Refresh: reuse detection & concurrent rotation loss (Phase 5) ---------------------------------------------------
+
+async def test_refresh_reused_token_with_successor_triggers_family_revocation(service):
+    """A revoked token WITH a successor (replaced_by set) is reuse -- must
+    call revoke_descendants(), not just reject."""
+    svc, _, token_repo = service
+    successor_id = uuid.uuid4()
+    fake_token = make_fake_token(replaced_by=successor_id)
+    token_repo.get_by_hash.return_value = fake_token
+    token_repo.revoke_descendants.return_value = make_fake_token(user_id=fake_token.user_id)
+
+    with pytest.raises(InvalidRefreshTokenError):
+        await svc.refresh("reused-token")
+
+    token_repo.revoke_descendants.assert_called_once_with(fake_token)
+
+
+async def test_refresh_reused_token_raises_same_exception_as_every_other_rejection(service):
+    """Reuse detection must not change what the caller sees -- same
+    exception type, same message, as an ordinary revoked/expired/unknown
+    token."""
+    svc, _, token_repo = service
+    fake_token = make_fake_token(replaced_by=uuid.uuid4())
+    token_repo.get_by_hash.return_value = fake_token
+    token_repo.revoke_descendants.return_value = None
+
+    with pytest.raises(InvalidRefreshTokenError) as exc:
+        await svc.refresh("reused-token")
+
+    assert str(exc.value) == "Invalid or expired refresh token."
+
+
+async def test_refresh_revoked_token_without_successor_does_not_trigger_reuse_detection(service):
+    """A revoked token with NO successor (logout-revoked) must NOT call
+    revoke_descendants() at all -- only the pre-existing plain-rejection
+    path."""
+    svc, _, token_repo = service
+    fake_token = make_fake_token(revoked=True)  # replaced_by defaults to None
+    token_repo.get_by_hash.return_value = fake_token
+
+    with pytest.raises(InvalidRefreshTokenError):
+        await svc.refresh("logged-out-token")
+
+    token_repo.revoke_descendants.assert_not_called()
+
+
+async def test_refresh_reuse_records_reuse_detected_audit_event(service):
+    svc, _, token_repo = service
+    fake_token = make_fake_token(replaced_by=uuid.uuid4())
+    token_repo.get_by_hash.return_value = fake_token
+    revoked_leaf = make_fake_token(user_id=fake_token.user_id)
+    token_repo.revoke_descendants.return_value = revoked_leaf
+
+    with pytest.raises(InvalidRefreshTokenError):
+        await svc.refresh("reused-token")
+
+    svc.audit_log_repository.record.assert_any_call(
+        action=audit_actions.REFRESH_TOKEN_REUSE_DETECTED,
+        actor_user_id=fake_token.user_id,
+        target_type="user",
+        target_id=fake_token.user_id,
+        event_metadata={
+            "presented_token_id": str(fake_token.id),
+            "family_already_revoked": False,
+        },
+    )
+
+
+async def test_refresh_reuse_records_family_revoked_audit_event_when_leaf_was_live(service):
+    svc, _, token_repo = service
+    fake_token = make_fake_token(replaced_by=uuid.uuid4())
+    token_repo.get_by_hash.return_value = fake_token
+    revoked_leaf = make_fake_token(user_id=fake_token.user_id)
+    token_repo.revoke_descendants.return_value = revoked_leaf
+
+    with pytest.raises(InvalidRefreshTokenError):
+        await svc.refresh("reused-token")
+
+    svc.audit_log_repository.record.assert_any_call(
+        action=audit_actions.REFRESH_TOKEN_FAMILY_REVOKED,
+        actor_user_id=fake_token.user_id,
+        target_type="refresh_token",
+        target_id=revoked_leaf.id,
+        event_metadata={"presented_token_id": str(fake_token.id)},
+    )
+
+
+async def test_refresh_reuse_does_not_record_family_revoked_when_already_dead(service):
+    """A second reuse attempt against an already-fully-revoked family must
+    still record reuse_detected, but must NOT record family_revoked --
+    there's nothing new that was actually revoked."""
+    svc, _, token_repo = service
+    fake_token = make_fake_token(replaced_by=uuid.uuid4())
+    token_repo.get_by_hash.return_value = fake_token
+    token_repo.revoke_descendants.return_value = None
+
+    with pytest.raises(InvalidRefreshTokenError):
+        await svc.refresh("reused-token")
+
+    recorded_actions = [
+        call.kwargs["action"] for call in svc.audit_log_repository.record.call_args_list
+    ]
+    assert recorded_actions == [audit_actions.REFRESH_TOKEN_REUSE_DETECTED]
+
+
+async def test_refresh_concurrent_rotation_loss_raises_same_exception(service):
+    """create_rotation_pair() returning None (lost a concurrent race on an
+    otherwise fully valid token) must raise the same generic exception as
+    every other rejection reason."""
+    svc, user_repo, token_repo = service
+    fake_user = make_fake_user()
+    fake_token = make_fake_token(user_id=fake_user.id)
+    token_repo.get_by_hash.return_value = fake_token
+    user_repo.get_by_id.return_value = fake_user
+    token_repo.create_rotation_pair.return_value = None
+
+    with pytest.raises(InvalidRefreshTokenError) as exc:
+        await svc.refresh("some-raw-refresh-token")
+
+    assert str(exc.value) == "Invalid or expired refresh token."
+
+
+async def test_refresh_concurrent_rotation_loss_records_audit_event_with_reason(service):
+    svc, user_repo, token_repo = service
+    fake_user = make_fake_user()
+    fake_token = make_fake_token(user_id=fake_user.id)
+    token_repo.get_by_hash.return_value = fake_token
+    user_repo.get_by_id.return_value = fake_user
+    token_repo.create_rotation_pair.return_value = None
+
+    with pytest.raises(InvalidRefreshTokenError):
+        await svc.refresh("some-raw-refresh-token")
+
+    svc.audit_log_repository.record.assert_called_once_with(
+        action=audit_actions.REFRESH_TOKEN_REJECTED,
+        actor_user_id=fake_token.user_id,
+        target_type="user",
+        target_id=fake_token.user_id,
+        event_metadata={"reason": "concurrent_rotation_lost"},
+    )
 
 
 # --- Logout ---------------------------------------------------
