@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.domain import audit_actions
 from app.domain.exceptions import (
     OrganizationNotFoundError,
     PermissionAlreadyAssignedError,
@@ -62,6 +63,12 @@ def make_fake_organization(organization_id=None, name="TestOrg"):
     return SimpleNamespace(id=organization_id or uuid.uuid4(), name=name, created_at=utc_now())
 
 
+# A fixed placeholder for tests that need to pass *some* actor_user_id but
+# don't care about its specific value -- tests that DO care construct
+# their own explicit id instead of using this one.
+ACTOR_ID = uuid.uuid4()
+
+
 @pytest.fixture
 def service():
     user_repo = AsyncMock()
@@ -70,9 +77,13 @@ def service():
     user_role_repo = AsyncMock()
     organization_repo = AsyncMock()
     organization_membership_repo = AsyncMock()
+    audit_repo = AsyncMock()
+    # audit_repo is deliberately not part of the returned tuple -- existing
+    # tests don't need to change their destructuring; tests that need to
+    # assert on it reach it via svc.audit_log_repository.
     svc = AuthorizationService(
         user_repo, role_repo, permission_repo, user_role_repo,
-        organization_repo, organization_membership_repo,
+        organization_repo, organization_membership_repo, audit_repo,
     )
     return svc, user_repo, role_repo, permission_repo, user_role_repo, organization_repo, organization_membership_repo
 
@@ -221,13 +232,25 @@ async def test_authorize_passes_organization_id_through_to_repository_and_echoes
     assert decision.allowed is True
 
 
+async def test_authorize_is_never_audited(service):
+    """A pure, high-frequency read -- must never write to the audit log."""
+    svc, user_repo, _, _, user_role_repo, _, _ = service
+    user = make_fake_user()
+    user_repo.get_by_id.return_value = user
+    user_role_repo.get_permissions_for_user.return_value = []
+
+    await svc.authorize(user.id, "document", "view")
+
+    svc.audit_log_repository.record.assert_not_called()
+
+
 # --- create_role() ---------------------------------------------------
 
 async def test_create_role_success(service):
     svc, _, role_repo, _, _, _, _ = service
     role_repo.create_role.return_value = make_fake_role(name="Auditor", description="reads logs")
 
-    result = await svc.create_role("Auditor", "reads logs")
+    result = await svc.create_role("Auditor", "reads logs", actor_user_id=ACTOR_ID)
 
     assert result.name == "Auditor"
     assert result.description == "reads logs"
@@ -239,7 +262,7 @@ async def test_create_role_without_description(service):
     svc, _, role_repo, _, _, _, _ = service
     role_repo.create_role.return_value = make_fake_role(name="Auditor", description=None)
 
-    result = await svc.create_role("Auditor")
+    result = await svc.create_role("Auditor", actor_user_id=ACTOR_ID)
 
     assert result.description is None
 
@@ -249,7 +272,7 @@ async def test_create_role_duplicate_name_raises_domain_exception(service):
     role_repo.create_role.side_effect = DuplicateRoleNameError("already exists")
 
     with pytest.raises(RoleNameAlreadyExistsError):
-        await svc.create_role("Admin")
+        await svc.create_role("Admin", actor_user_id=ACTOR_ID)
 
 
 async def test_create_role_scoped_to_organization_succeeds(service):
@@ -258,7 +281,7 @@ async def test_create_role_scoped_to_organization_succeeds(service):
     organization_repo.get_by_id.return_value = org
     role_repo.create_role.return_value = make_fake_role(name="OrgRole", organization_id=org.id)
 
-    result = await svc.create_role("OrgRole", organization_id=org.id)
+    result = await svc.create_role("OrgRole", organization_id=org.id, actor_user_id=ACTOR_ID)
 
     role_repo.create_role.assert_called_once_with("OrgRole", None, org.id)
     assert result.organization_id == org.id
@@ -269,9 +292,37 @@ async def test_create_role_unknown_organization_raises_not_found(service):
     organization_repo.get_by_id.return_value = None
 
     with pytest.raises(OrganizationNotFoundError):
-        await svc.create_role("OrgRole", organization_id=uuid.uuid4())
+        await svc.create_role("OrgRole", organization_id=uuid.uuid4(), actor_user_id=ACTOR_ID)
 
     role_repo.create_role.assert_not_called()
+
+
+async def test_create_role_records_audit_event(service):
+    svc, _, role_repo, _, _, _, _ = service
+    role = make_fake_role(name="Auditor")
+    role_repo.create_role.return_value = role
+    actor_id = uuid.uuid4()
+
+    await svc.create_role("Auditor", actor_user_id=actor_id)
+
+    svc.audit_log_repository.record.assert_called_once_with(
+        action=audit_actions.ROLE_CREATED,
+        actor_user_id=actor_id,
+        target_type="role",
+        target_id=role.id,
+        organization_id=role.organization_id,
+        event_metadata={"name": "Auditor"},
+    )
+
+
+async def test_create_role_failure_does_not_record_audit_event(service):
+    svc, _, role_repo, _, _, _, _ = service
+    role_repo.create_role.side_effect = DuplicateRoleNameError("already exists")
+
+    with pytest.raises(RoleNameAlreadyExistsError):
+        await svc.create_role("Admin", actor_user_id=ACTOR_ID)
+
+    svc.audit_log_repository.record.assert_not_called()
 
 
 # --- assign_role() ---------------------------------------------------
@@ -282,7 +333,7 @@ async def test_assign_role_success(service):
     role_repo.get_by_id.return_value = role
     user_id = uuid.uuid4()
 
-    await svc.assign_role(user_id, role.id)
+    await svc.assign_role(user_id, role.id, actor_user_id=ACTOR_ID)
 
     user_role_repo.assign.assert_called_once_with(user_id, role.id, None)
 
@@ -292,7 +343,7 @@ async def test_assign_role_unknown_role_raises_not_found(service):
     role_repo.get_by_id.return_value = None
 
     with pytest.raises(RoleNotFoundError):
-        await svc.assign_role(uuid.uuid4(), uuid.uuid4())
+        await svc.assign_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
 
     user_role_repo.assign.assert_not_called()
 
@@ -303,7 +354,7 @@ async def test_assign_role_duplicate_raises_domain_exception(service):
     user_role_repo.assign.side_effect = DuplicateRoleAssignmentError("already assigned")
 
     with pytest.raises(RoleAlreadyAssignedError):
-        await svc.assign_role(uuid.uuid4(), uuid.uuid4())
+        await svc.assign_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
 
 
 async def test_assign_role_global_role_scoped_to_organization_succeeds(service):
@@ -317,7 +368,7 @@ async def test_assign_role_global_role_scoped_to_organization_succeeds(service):
     membership_repo.is_member.return_value = True
     user_id = uuid.uuid4()
 
-    await svc.assign_role(user_id, role.id, organization_id=org.id)
+    await svc.assign_role(user_id, role.id, organization_id=org.id, actor_user_id=ACTOR_ID)
 
     membership_repo.is_member.assert_called_once_with(user_id, org.id)
     user_role_repo.assign.assert_called_once_with(user_id, role.id, org.id)
@@ -329,7 +380,9 @@ async def test_assign_role_unknown_organization_raises_not_found(service):
     organization_repo.get_by_id.return_value = None
 
     with pytest.raises(OrganizationNotFoundError):
-        await svc.assign_role(uuid.uuid4(), uuid.uuid4(), organization_id=uuid.uuid4())
+        await svc.assign_role(
+            uuid.uuid4(), uuid.uuid4(), organization_id=uuid.uuid4(), actor_user_id=ACTOR_ID
+        )
 
     user_role_repo.assign.assert_not_called()
 
@@ -341,7 +394,9 @@ async def test_assign_role_non_member_raises_not_organization_member(service):
     membership_repo.is_member.return_value = False
 
     with pytest.raises(UserNotOrganizationMemberError):
-        await svc.assign_role(uuid.uuid4(), uuid.uuid4(), organization_id=uuid.uuid4())
+        await svc.assign_role(
+            uuid.uuid4(), uuid.uuid4(), organization_id=uuid.uuid4(), actor_user_id=ACTOR_ID
+        )
 
     user_role_repo.assign.assert_not_called()
 
@@ -353,7 +408,9 @@ async def test_assign_role_org_scoped_role_under_wrong_organization_raises_misma
     role_repo.get_by_id.return_value = make_fake_role(organization_id=role_org_id)
 
     with pytest.raises(RoleOrganizationMismatchError):
-        await svc.assign_role(uuid.uuid4(), uuid.uuid4(), organization_id=wrong_org_id)
+        await svc.assign_role(
+            uuid.uuid4(), uuid.uuid4(), organization_id=wrong_org_id, actor_user_id=ACTOR_ID
+        )
 
     organization_repo.get_by_id.assert_not_called()
     user_role_repo.assign.assert_not_called()
@@ -366,7 +423,7 @@ async def test_assign_role_org_scoped_role_with_no_organization_id_raises_mismat
     role_repo.get_by_id.return_value = make_fake_role(organization_id=uuid.uuid4())
 
     with pytest.raises(RoleOrganizationMismatchError):
-        await svc.assign_role(uuid.uuid4(), uuid.uuid4())
+        await svc.assign_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
 
     user_role_repo.assign.assert_not_called()
 
@@ -380,9 +437,38 @@ async def test_assign_role_org_scoped_role_under_its_own_organization_succeeds(s
     membership_repo.is_member.return_value = True
     user_id = uuid.uuid4()
 
-    await svc.assign_role(user_id, role.id, organization_id=org.id)
+    await svc.assign_role(user_id, role.id, organization_id=org.id, actor_user_id=ACTOR_ID)
 
     user_role_repo.assign.assert_called_once_with(user_id, role.id, org.id)
+
+
+async def test_assign_role_records_audit_event(service):
+    svc, _, role_repo, _, user_role_repo, _, _ = service
+    role = make_fake_role()
+    role_repo.get_by_id.return_value = role
+    user_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+
+    await svc.assign_role(user_id, role.id, actor_user_id=actor_id)
+
+    svc.audit_log_repository.record.assert_called_once_with(
+        action=audit_actions.ROLE_ASSIGNED,
+        actor_user_id=actor_id,
+        target_type="user",
+        target_id=user_id,
+        organization_id=None,
+        event_metadata={"role_id": str(role.id)},
+    )
+
+
+async def test_assign_role_failure_does_not_record_audit_event(service):
+    svc, _, role_repo, _, user_role_repo, _, _ = service
+    role_repo.get_by_id.return_value = None
+
+    with pytest.raises(RoleNotFoundError):
+        await svc.assign_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
+
+    svc.audit_log_repository.record.assert_not_called()
 
 
 # --- revoke_role() ---------------------------------------------------
@@ -391,7 +477,7 @@ async def test_revoke_role_success_returns_true(service):
     svc, _, _, _, user_role_repo, _, _ = service
     user_role_repo.revoke.return_value = True
 
-    result = await svc.revoke_role(uuid.uuid4(), uuid.uuid4())
+    result = await svc.revoke_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
 
     assert result is True
 
@@ -400,7 +486,7 @@ async def test_revoke_role_nonexistent_returns_false_without_raising(service):
     svc, _, _, _, user_role_repo, _, _ = service
     user_role_repo.revoke.return_value = False
 
-    result = await svc.revoke_role(uuid.uuid4(), uuid.uuid4())
+    result = await svc.revoke_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
 
     assert result is False
 
@@ -410,9 +496,35 @@ async def test_revoke_role_passes_organization_id_through(service):
     user_role_repo.revoke.return_value = True
     user_id, role_id, org_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 
-    await svc.revoke_role(user_id, role_id, organization_id=org_id)
+    await svc.revoke_role(user_id, role_id, organization_id=org_id, actor_user_id=ACTOR_ID)
 
     user_role_repo.revoke.assert_called_once_with(user_id, role_id, org_id)
+
+
+async def test_revoke_role_success_records_audit_event(service):
+    svc, _, _, _, user_role_repo, _, _ = service
+    user_role_repo.revoke.return_value = True
+    user_id, role_id, actor_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+    await svc.revoke_role(user_id, role_id, actor_user_id=actor_id)
+
+    svc.audit_log_repository.record.assert_called_once_with(
+        action=audit_actions.ROLE_REVOKED,
+        actor_user_id=actor_id,
+        target_type="user",
+        target_id=user_id,
+        organization_id=None,
+        event_metadata={"role_id": str(role_id)},
+    )
+
+
+async def test_revoke_role_no_op_does_not_record_audit_event(service):
+    svc, _, _, _, user_role_repo, _, _ = service
+    user_role_repo.revoke.return_value = False
+
+    await svc.revoke_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
+
+    svc.audit_log_repository.record.assert_not_called()
 
 
 # --- assign_permission_to_role() ---------------------------------------------------
@@ -424,7 +536,7 @@ async def test_assign_permission_to_role_success(service):
     role_repo.get_by_id.return_value = role
     permission_repo.get_by_id.return_value = permission
 
-    await svc.assign_permission_to_role(role.id, permission.id)
+    await svc.assign_permission_to_role(role.id, permission.id, actor_user_id=ACTOR_ID)
 
     role_repo.add_permission.assert_called_once_with(role.id, permission.id)
 
@@ -434,7 +546,7 @@ async def test_assign_permission_to_role_unknown_role_raises_not_found(service):
     role_repo.get_by_id.return_value = None
 
     with pytest.raises(RoleNotFoundError):
-        await svc.assign_permission_to_role(uuid.uuid4(), uuid.uuid4())
+        await svc.assign_permission_to_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
 
     permission_repo.get_by_id.assert_not_called()
 
@@ -445,7 +557,7 @@ async def test_assign_permission_to_role_unknown_permission_raises_not_found(ser
     permission_repo.get_by_id.return_value = None
 
     with pytest.raises(PermissionNotFoundError):
-        await svc.assign_permission_to_role(uuid.uuid4(), uuid.uuid4())
+        await svc.assign_permission_to_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
 
     role_repo.add_permission.assert_not_called()
 
@@ -457,7 +569,37 @@ async def test_assign_permission_to_role_duplicate_raises_domain_exception(servi
     role_repo.add_permission.side_effect = DuplicateRolePermissionError("already has it")
 
     with pytest.raises(PermissionAlreadyAssignedError):
-        await svc.assign_permission_to_role(uuid.uuid4(), uuid.uuid4())
+        await svc.assign_permission_to_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
+
+
+async def test_assign_permission_to_role_records_audit_event(service):
+    svc, _, role_repo, permission_repo, _, _, _ = service
+    role = make_fake_role()
+    permission = make_fake_permission()
+    role_repo.get_by_id.return_value = role
+    permission_repo.get_by_id.return_value = permission
+    actor_id = uuid.uuid4()
+
+    await svc.assign_permission_to_role(role.id, permission.id, actor_user_id=actor_id)
+
+    svc.audit_log_repository.record.assert_called_once_with(
+        action=audit_actions.PERMISSION_ASSIGNED_TO_ROLE,
+        actor_user_id=actor_id,
+        target_type="role",
+        target_id=role.id,
+        organization_id=role.organization_id,
+        event_metadata={"permission_id": str(permission.id)},
+    )
+
+
+async def test_assign_permission_to_role_failure_does_not_record_audit_event(service):
+    svc, _, role_repo, permission_repo, _, _, _ = service
+    role_repo.get_by_id.return_value = None
+
+    with pytest.raises(RoleNotFoundError):
+        await svc.assign_permission_to_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
+
+    svc.audit_log_repository.record.assert_not_called()
 
 
 # --- remove_permission_from_role() ---------------------------------------------------
@@ -467,7 +609,7 @@ async def test_remove_permission_from_role_success_returns_true(service):
     role_repo.get_by_id.return_value = make_fake_role()
     role_repo.remove_permission.return_value = True
 
-    result = await svc.remove_permission_from_role(uuid.uuid4(), uuid.uuid4())
+    result = await svc.remove_permission_from_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
 
     assert result is True
 
@@ -477,7 +619,7 @@ async def test_remove_permission_from_role_unknown_role_raises_not_found(service
     role_repo.get_by_id.return_value = None
 
     with pytest.raises(RoleNotFoundError):
-        await svc.remove_permission_from_role(uuid.uuid4(), uuid.uuid4())
+        await svc.remove_permission_from_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
 
     role_repo.remove_permission.assert_not_called()
 
@@ -487,9 +629,39 @@ async def test_remove_permission_from_role_not_attached_returns_false(service):
     role_repo.get_by_id.return_value = make_fake_role()
     role_repo.remove_permission.return_value = False
 
-    result = await svc.remove_permission_from_role(uuid.uuid4(), uuid.uuid4())
+    result = await svc.remove_permission_from_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
 
     assert result is False
+
+
+async def test_remove_permission_from_role_success_records_audit_event(service):
+    svc, _, role_repo, _, _, _, _ = service
+    role = make_fake_role()
+    role_repo.get_by_id.return_value = role
+    role_repo.remove_permission.return_value = True
+    permission_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+
+    await svc.remove_permission_from_role(role.id, permission_id, actor_user_id=actor_id)
+
+    svc.audit_log_repository.record.assert_called_once_with(
+        action=audit_actions.PERMISSION_REMOVED_FROM_ROLE,
+        actor_user_id=actor_id,
+        target_type="role",
+        target_id=role.id,
+        organization_id=role.organization_id,
+        event_metadata={"permission_id": str(permission_id)},
+    )
+
+
+async def test_remove_permission_from_role_no_op_does_not_record_audit_event(service):
+    svc, _, role_repo, _, _, _, _ = service
+    role_repo.get_by_id.return_value = make_fake_role()
+    role_repo.remove_permission.return_value = False
+
+    await svc.remove_permission_from_role(uuid.uuid4(), uuid.uuid4(), actor_user_id=ACTOR_ID)
+
+    svc.audit_log_repository.record.assert_not_called()
 
 
 # --- get_user_permissions() ---------------------------------------------------
@@ -545,3 +717,12 @@ async def test_get_user_permissions_passes_organization_id_through(service):
     user_role_repo.get_permissions_for_user.assert_called_once_with(
         user_id, organization_id=org_id
     )
+
+
+async def test_get_user_permissions_is_never_audited(service):
+    svc, _, _, _, user_role_repo, _, _ = service
+    user_role_repo.get_permissions_for_user.return_value = []
+
+    await svc.get_user_permissions(uuid.uuid4())
+
+    svc.audit_log_repository.record.assert_not_called()

@@ -6,6 +6,18 @@ login, refresh, and logout. Contains no SQL, no SQLAlchemy model queries, no
 database session management, no HTTPException, and no FastAPI imports --
 this module should be fully usable and testable with plain mocked
 repositories and zero infrastructure.
+
+Phase 4.3: every workflow now writes to the audit log via
+audit_log_repository -- register, login, and refresh record BOTH their
+success and every distinct failure reason (unlike the HTTP-facing
+exceptions those failures raise, which deliberately collapse multiple
+reasons into one indistinguishable message -- see app/domain/exceptions.py
+-- the audit log is an internal-only surface, never returned in an API
+response, so it's free to record the real reason for admin/security
+investigation). logout() is the one exception: only an actual revocation
+is recorded, not a no-op call against an unknown/already-revoked token --
+that path carries no security signal worth the noise (see logout()'s own
+docstring).
 """
 
 from app.core.security import (
@@ -18,6 +30,7 @@ from app.core.security import (
     verify_password,
 )
 from app.core.time import utc_now
+from app.domain import audit_actions
 from app.domain.exceptions import (
     EmailAlreadyExistsError,
     InactiveUserError,
@@ -29,9 +42,10 @@ from app.repositories.exceptions import DuplicateEmailError
 
 
 class AuthService:
-    def __init__(self, user_repository, refresh_token_repository):
+    def __init__(self, user_repository, refresh_token_repository, audit_log_repository):
         self.user_repository = user_repository
         self.refresh_token_repository = refresh_token_repository
+        self.audit_log_repository = audit_log_repository
 
     async def register(self, email: str, password: str) -> RegisterResponse:
         """Registers a new user. Issues no tokens -- Phase 1 registration is
@@ -43,12 +57,24 @@ class AuthService:
                 email=email, password_hash=password_hash
             )
         except DuplicateEmailError as exc:
+            await self.audit_log_repository.record(
+                action=audit_actions.USER_REGISTRATION_FAILED,
+                target_type="user",
+                event_metadata={"attempted_email": email, "reason": "duplicate_email"},
+            )
             # Repository-level fact ("a UNIQUE constraint was violated") is
             # translated here into a business-level fact ("registration
             # cannot proceed with this email").
             raise EmailAlreadyExistsError(
                 "Unable to register with the provided details."
             ) from exc
+
+        await self.audit_log_repository.record(
+            action=audit_actions.USER_REGISTERED,
+            actor_user_id=user.id,
+            target_type="user",
+            target_id=user.id,
+        )
 
         return RegisterResponse(id=user.id, email=user.email, created_at=user.created_at)
 
@@ -62,15 +88,41 @@ class AuthService:
         user = await self.user_repository.get_by_email(email)
 
         if user is None:
+            await self.audit_log_repository.record(
+                action=audit_actions.USER_LOGIN_FAILED,
+                target_type="user",
+                event_metadata={"attempted_email": email, "reason": "unknown_email"},
+            )
             raise InvalidCredentialsError("Invalid email or password.")
 
         if not user.is_active:
+            await self.audit_log_repository.record(
+                action=audit_actions.USER_LOGIN_FAILED,
+                actor_user_id=user.id,
+                target_type="user",
+                target_id=user.id,
+                event_metadata={"reason": "inactive_account"},
+            )
             raise InactiveUserError("Account is inactive.")
 
         if not verify_password(password, user.password_hash):
+            await self.audit_log_repository.record(
+                action=audit_actions.USER_LOGIN_FAILED,
+                actor_user_id=user.id,
+                target_type="user",
+                target_id=user.id,
+                event_metadata={"reason": "wrong_password"},
+            )
             raise InvalidCredentialsError("Invalid email or password.")
 
         await self.user_repository.update_last_login(user)
+
+        await self.audit_log_repository.record(
+            action=audit_actions.USER_LOGIN_SUCCEEDED,
+            actor_user_id=user.id,
+            target_type="user",
+            target_id=user.id,
+        )
 
         return await self._issue_token_pair(user)
 
@@ -87,12 +139,30 @@ class AuthService:
         token = await self.refresh_token_repository.get_by_hash(token_hash)
 
         if token is None:
+            await self.audit_log_repository.record(
+                action=audit_actions.REFRESH_TOKEN_REJECTED,
+                event_metadata={"reason": "unknown_token"},
+            )
             raise InvalidRefreshTokenError("Invalid or expired refresh token.")
 
         if token.revoked_at is not None:
+            await self.audit_log_repository.record(
+                action=audit_actions.REFRESH_TOKEN_REJECTED,
+                actor_user_id=token.user_id,
+                target_type="user",
+                target_id=token.user_id,
+                event_metadata={"reason": "revoked_token"},
+            )
             raise InvalidRefreshTokenError("Invalid or expired refresh token.")
 
         if token.expires_at <= utc_now():
+            await self.audit_log_repository.record(
+                action=audit_actions.REFRESH_TOKEN_REJECTED,
+                actor_user_id=token.user_id,
+                target_type="user",
+                target_id=token.user_id,
+                event_metadata={"reason": "expired_token"},
+            )
             raise InvalidRefreshTokenError("Invalid or expired refresh token.")
 
         user = await self.user_repository.get_by_id(token.user_id)
@@ -101,6 +171,13 @@ class AuthService:
             # Deliberately the same exception as the token-validity failures
             # above -- an inactive/deleted account's refresh token should
             # not be distinguishable from an ordinary invalid token.
+            await self.audit_log_repository.record(
+                action=audit_actions.REFRESH_TOKEN_REJECTED,
+                actor_user_id=token.user_id,
+                target_type="user",
+                target_id=token.user_id,
+                event_metadata={"reason": "inactive_or_deleted_owner"},
+            )
             raise InvalidRefreshTokenError("Invalid or expired refresh token.")
 
         new_raw_refresh_token = generate_refresh_token()
@@ -111,6 +188,13 @@ class AuthService:
             old_token=token,
             new_token_hash=new_token_hash,
             new_expires_at=new_expires_at,
+        )
+
+        await self.audit_log_repository.record(
+            action=audit_actions.REFRESH_TOKEN_ROTATED,
+            actor_user_id=user.id,
+            target_type="user",
+            target_id=user.id,
         )
 
         access_token = create_access_token(str(user.id))
@@ -125,7 +209,14 @@ class AuthService:
     async def logout(self, refresh_token: str) -> None:
         """Revokes a refresh token. Idempotent and silent: an unknown or
         already-revoked token is treated identically to a successful logout
-        -- no exception, no signal about whether the token ever existed."""
+        -- no exception, no signal about whether the token ever existed.
+
+        Only an actual revocation is written to the audit log -- a no-op
+        call against an unknown or already-revoked token carries no
+        security signal worth recording (unlike a failed login, this isn't
+        evidence of anything: it's the ordinary shape of a client that
+        already logged out, or double-submitted a logout request).
+        """
         token_hash = hash_refresh_token(refresh_token)
         token = await self.refresh_token_repository.get_by_hash(token_hash)
 
@@ -133,6 +224,13 @@ class AuthService:
             return
 
         await self.refresh_token_repository.revoke(token)
+
+        await self.audit_log_repository.record(
+            action=audit_actions.USER_LOGOUT,
+            actor_user_id=token.user_id,
+            target_type="user",
+            target_id=token.user_id,
+        )
 
     async def _issue_token_pair(self, user) -> TokenResponse:
         """Shared helper for issuing a fresh access/refresh token pair for

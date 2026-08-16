@@ -27,6 +27,7 @@ from app.domain.models import User
 from app.domain.services.auth_service import AuthService
 from app.domain.services.authorization_service import AuthorizationService
 from app.domain.services.organization_service import OrganizationService
+from app.repositories.audit_log_repository import AuditLogRepository
 from app.repositories.organization_membership_repository import (
     OrganizationMembershipRepository,
 )
@@ -43,10 +44,15 @@ _PERMISSION_DENIED_DETAIL = "You do not have permission to perform this action."
 
 async def get_auth_service(session: AsyncSession = Depends(get_db)) -> AuthService:
     """Constructs AuthService wired to real repositories sharing one
-    per-request database session."""
+    per-request database session.
+
+    Gained audit_log_repository in Phase 4.3, when AuthService started
+    recording every register/login/refresh/logout outcome.
+    """
     return AuthService(
         user_repository=UserRepository(session),
         refresh_token_repository=RefreshTokenRepository(session),
+        audit_log_repository=AuditLogRepository(session),
     )
 
 
@@ -112,7 +118,8 @@ async def get_authorization_service(
     one per-request database session -- same shape as get_auth_service().
 
     Gained organization_repository/organization_membership_repository in
-    Phase 3.3, when AuthorizationService itself became organization-aware.
+    Phase 3.3, when AuthorizationService itself became organization-aware,
+    and audit_log_repository in Phase 4.3.
     """
     return AuthorizationService(
         user_repository=UserRepository(session),
@@ -121,6 +128,7 @@ async def get_authorization_service(
         user_role_repository=UserRoleRepository(session),
         organization_repository=OrganizationRepository(session),
         organization_membership_repository=OrganizationMembershipRepository(session),
+        audit_log_repository=AuditLogRepository(session),
     )
 
 
@@ -129,11 +137,13 @@ async def get_organization_service(
 ) -> OrganizationService:
     """Constructs OrganizationService wired to real repositories sharing
     one per-request database session -- same shape as get_auth_service()
-    and get_authorization_service()."""
+    and get_authorization_service(). Gained audit_log_repository in
+    Phase 4.3."""
     return OrganizationService(
         organization_repository=OrganizationRepository(session),
         organization_membership_repository=OrganizationMembershipRepository(session),
         user_repository=UserRepository(session),
+        audit_log_repository=AuditLogRepository(session),
     )
 
 

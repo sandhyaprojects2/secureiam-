@@ -17,6 +17,7 @@ from app.core.dependencies import (
 from app.domain.services.auth_service import AuthService
 from app.domain.services.authorization_service import AuthorizationService
 from app.domain.services.organization_service import OrganizationService
+from app.repositories.audit_log_repository import AuditLogRepository
 from app.repositories.organization_membership_repository import (
     OrganizationMembershipRepository,
 )
@@ -34,6 +35,7 @@ async def test_get_auth_service_returns_correctly_wired_instance(test_session):
     assert isinstance(service, AuthService)
     assert isinstance(service.user_repository, UserRepository)
     assert isinstance(service.refresh_token_repository, RefreshTokenRepository)
+    assert isinstance(service.audit_log_repository, AuditLogRepository)
 
 
 async def test_get_auth_service_repositories_share_the_same_session(test_session):
@@ -43,6 +45,7 @@ async def test_get_auth_service_repositories_share_the_same_session(test_session
 
     assert service.user_repository.session is test_session
     assert service.refresh_token_repository.session is test_session
+    assert service.audit_log_repository.session is test_session
 
 
 async def test_get_authorization_service_returns_correctly_wired_instance(test_session):
@@ -57,6 +60,7 @@ async def test_get_authorization_service_returns_correctly_wired_instance(test_s
     assert isinstance(
         service.organization_membership_repository, OrganizationMembershipRepository
     )
+    assert isinstance(service.audit_log_repository, AuditLogRepository)
 
 
 async def test_get_authorization_service_repositories_share_the_same_session(test_session):
@@ -68,6 +72,7 @@ async def test_get_authorization_service_repositories_share_the_same_session(tes
     assert service.user_role_repository.session is test_session
     assert service.organization_repository.session is test_session
     assert service.organization_membership_repository.session is test_session
+    assert service.audit_log_repository.session is test_session
 
 
 async def test_get_organization_service_returns_correctly_wired_instance(test_session):
@@ -79,6 +84,7 @@ async def test_get_organization_service_returns_correctly_wired_instance(test_se
         service.organization_membership_repository, OrganizationMembershipRepository
     )
     assert isinstance(service.user_repository, UserRepository)
+    assert isinstance(service.audit_log_repository, AuditLogRepository)
 
 
 async def test_get_organization_service_repositories_share_the_same_session(test_session):
@@ -87,3 +93,4 @@ async def test_get_organization_service_repositories_share_the_same_session(test
     assert service.organization_repository.session is test_session
     assert service.organization_membership_repository.session is test_session
     assert service.user_repository.session is test_session
+    assert service.audit_log_repository.session is test_session

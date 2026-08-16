@@ -35,11 +35,11 @@ router = APIRouter(prefix="/v1", tags=["organizations"])
 )
 async def create_organization(
     request: CreateOrganizationRequest,
-    _: User = Depends(require_permission("organization", "manage")),
+    admin: User = Depends(require_permission("organization", "manage")),
     service: OrganizationService = Depends(get_organization_service),
 ) -> OrganizationResponse:
     try:
-        result = await service.create_organization(request.name)
+        result = await service.create_organization(request.name, actor_user_id=admin.id)
     except OrganizationNameAlreadyExistsError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -56,11 +56,11 @@ async def create_organization(
 async def add_organization_member(
     organization_id: uuid.UUID,
     request: AddMemberRequest,
-    _: User = Depends(require_permission("organization", "manage")),
+    admin: User = Depends(require_permission("organization", "manage")),
     service: OrganizationService = Depends(get_organization_service),
 ) -> Response:
     try:
-        await service.add_member(request.user_id, organization_id)
+        await service.add_member(request.user_id, organization_id, actor_user_id=admin.id)
     except UserNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
     except OrganizationNotFoundError:
@@ -83,13 +83,13 @@ async def add_organization_member(
 async def remove_organization_member(
     organization_id: uuid.UUID,
     user_id: uuid.UUID,
-    _: User = Depends(require_permission("organization", "manage")),
+    admin: User = Depends(require_permission("organization", "manage")),
     service: OrganizationService = Depends(get_organization_service),
 ) -> Response:
     # No branch on the returned bool: removing a membership that doesn't
     # exist is a no-op, not an error -- matches
     # OrganizationService.remove_member()'s own idempotent contract.
-    await service.remove_member(user_id, organization_id)
+    await service.remove_member(user_id, organization_id, actor_user_id=admin.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

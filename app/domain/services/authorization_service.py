@@ -2,15 +2,16 @@
 AuthorizationService -- the core RBAC authorization engine.
 
 Coordinates RoleRepository, PermissionRepository, UserRoleRepository,
-UserRepository, OrganizationRepository, and OrganizationMembershipRepository
-to answer "can this user do this?" and to manage the role/permission graph
-those answers depend on. Like AuthService, this module contains no SQL, no
-SQLAlchemy model queries, no database session management, and no
-HTTPException/FastAPI imports -- it is fully usable and testable with plain
-mocked repositories.
+UserRepository, OrganizationRepository, OrganizationMembershipRepository,
+and AuditLogRepository to answer "can this user do this?" and to manage
+the role/permission graph those answers depend on. Like AuthService, this
+module contains no SQL, no SQLAlchemy model queries, no database session
+management, and no HTTPException/FastAPI imports -- it is fully usable and
+testable with plain mocked repositories.
 
-Design principles this module is built around (see docs/phases/phase-2.3.md
-and docs/phases/phase-3.3.md for the full rationale):
+Design principles this module is built around (see docs/phases/phase-2.3.md,
+docs/phases/phase-3.3.md, and docs/phases/phase-4.3.md for the full
+rationale):
 
   - Deny by default. authorize() starts from "no" and only becomes "yes" if
     a matching permission is found; there is no implicit-allow path.
@@ -41,10 +42,25 @@ and docs/phases/phase-3.3.md for the full rationale):
     defaults to None. Passing none of it reproduces exactly the pre-Phase-3
     (global-only) behavior these methods already had -- see each method's
     own docstring for its specific organization-scoping rule.
+
+  - Phase 4.3: every mutating method (create_role, assign_role,
+    revoke_role, assign_permission_to_role, remove_permission_from_role)
+    now takes a required, keyword-only actor_user_id and records an audit
+    event -- but ONLY on success, never on a rejected attempt (unlike
+    AuthService, whose failure paths ARE audited). The reasoning: every
+    caller of these methods has already passed require_permission()'s
+    check at the API layer, so a RoleNotFoundError or a duplicate-name
+    rejection here is an already-authorized admin's benign input mistake,
+    not a probing/attack signal the way a failed login is -- there's
+    nothing forensically valuable about recording "an authorized admin
+    made a typo." authorize() and get_user_permissions() are pure reads
+    and are never audited at all, to keep the log's volume proportional to
+    state changes, not every permission check.
 """
 
 import uuid
 
+from app.domain import audit_actions
 from app.domain.exceptions import (
     OrganizationNotFoundError,
     PermissionAlreadyAssignedError,
@@ -76,6 +92,7 @@ class AuthorizationService:
         user_role_repository,
         organization_repository,
         organization_membership_repository,
+        audit_log_repository,
     ):
         self.user_repository = user_repository
         self.role_repository = role_repository
@@ -83,6 +100,7 @@ class AuthorizationService:
         self.user_role_repository = user_role_repository
         self.organization_repository = organization_repository
         self.organization_membership_repository = organization_membership_repository
+        self.audit_log_repository = audit_log_repository
 
     async def authorize(
         self,
@@ -107,6 +125,10 @@ class AuthorizationService:
         rule). This method does not itself verify the user is a member of
         that organization -- see assign_role()'s docstring for why that
         check belongs at assignment time, not at every check thereafter.
+
+        Not audited (Phase 4.3): this is a pure, extremely high-frequency
+        read -- recording every permission check would dwarf every other
+        audit event combined for essentially no forensic value.
         """
         user = await self.user_repository.get_by_id(user_id)
 
@@ -129,6 +151,8 @@ class AuthorizationService:
         name: str,
         description: str | None = None,
         organization_id: uuid.UUID | None = None,
+        *,
+        actor_user_id: uuid.UUID,
     ) -> RoleResponse:
         """Creates a new role, optionally scoped to an organization.
 
@@ -140,6 +164,11 @@ class AuthorizationService:
 
         organization_id defaults to None, creating a global/system-style
         role usable everywhere -- identical to Phase 2's only behavior.
+
+        actor_user_id is required and identifies who performed this action
+        for the audit log -- every caller is an already-authorized admin
+        (gated by require_permission("role", "manage") at the API layer),
+        so there's always a real acting user to record.
         """
         if organization_id is not None:
             organization = await self.organization_repository.get_by_id(organization_id)
@@ -150,6 +179,15 @@ class AuthorizationService:
             role = await self.role_repository.create_role(name, description, organization_id)
         except DuplicateRoleNameError as exc:
             raise RoleNameAlreadyExistsError(f"Role name already exists: {name}") from exc
+
+        await self.audit_log_repository.record(
+            action=audit_actions.ROLE_CREATED,
+            actor_user_id=actor_user_id,
+            target_type="role",
+            target_id=role.id,
+            organization_id=role.organization_id,
+            event_metadata={"name": role.name},
+        )
 
         return RoleResponse(
             id=role.id,
@@ -164,6 +202,8 @@ class AuthorizationService:
         user_id: uuid.UUID,
         role_id: uuid.UUID,
         organization_id: uuid.UUID | None = None,
+        *,
+        actor_user_id: uuid.UUID,
     ) -> None:
         """Assigns a role to a user, optionally scoped to an organization.
 
@@ -187,6 +227,8 @@ class AuthorizationService:
             permission resolution already handles.
           - RoleAlreadyAssignedError if the user already has this exact
             (role, organization) combination.
+
+        actor_user_id is required -- see create_role()'s docstring for why.
         """
         role = await self.role_repository.get_by_id(role_id)
         if role is None:
@@ -219,11 +261,22 @@ class AuthorizationService:
                 f"(organization_id={organization_id})"
             ) from exc
 
+        await self.audit_log_repository.record(
+            action=audit_actions.ROLE_ASSIGNED,
+            actor_user_id=actor_user_id,
+            target_type="user",
+            target_id=user_id,
+            organization_id=organization_id,
+            event_metadata={"role_id": str(role_id)},
+        )
+
     async def revoke_role(
         self,
         user_id: uuid.UUID,
         role_id: uuid.UUID,
         organization_id: uuid.UUID | None = None,
+        *,
+        actor_user_id: uuid.UUID,
     ) -> bool:
         """Revokes a role from a user, if assigned with an exactly matching
         organization scope (None for global, or a specific organization).
@@ -234,11 +287,28 @@ class AuthorizationService:
         immediately: the very next authorize() or get_user_permissions()
         call for this user will no longer see permissions granted solely by
         this assignment, since neither method caches.
+
+        Only recorded to the audit log when an assignment was actually
+        found and removed (result is True) -- a no-op revoke carries no
+        information worth logging, same reasoning as
+        AuthService.logout()'s no-op path.
         """
-        return await self.user_role_repository.revoke(user_id, role_id, organization_id)
+        revoked = await self.user_role_repository.revoke(user_id, role_id, organization_id)
+
+        if revoked:
+            await self.audit_log_repository.record(
+                action=audit_actions.ROLE_REVOKED,
+                actor_user_id=actor_user_id,
+                target_type="user",
+                target_id=user_id,
+                organization_id=organization_id,
+                event_metadata={"role_id": str(role_id)},
+            )
+
+        return revoked
 
     async def assign_permission_to_role(
-        self, role_id: uuid.UUID, permission_id: uuid.UUID
+        self, role_id: uuid.UUID, permission_id: uuid.UUID, *, actor_user_id: uuid.UUID
     ) -> None:
         """Attaches a permission to a role.
 
@@ -269,8 +339,17 @@ class AuthorizationService:
                 f"Role {role_id} already has permission {permission_id}"
             ) from exc
 
+        await self.audit_log_repository.record(
+            action=audit_actions.PERMISSION_ASSIGNED_TO_ROLE,
+            actor_user_id=actor_user_id,
+            target_type="role",
+            target_id=role_id,
+            organization_id=role.organization_id,
+            event_metadata={"permission_id": str(permission_id)},
+        )
+
     async def remove_permission_from_role(
-        self, role_id: uuid.UUID, permission_id: uuid.UUID
+        self, role_id: uuid.UUID, permission_id: uuid.UUID, *, actor_user_id: uuid.UUID
     ) -> bool:
         """Removes a permission from a role, if attached.
 
@@ -279,12 +358,27 @@ class AuthorizationService:
         removing a permission the role never had is a no-op, not an error,
         matching revoke_role()'s idempotent shape. Takes effect
         immediately, for the same no-caching reason as revoke_role().
+
+        Only recorded to the audit log when a permission was actually
+        removed, same reasoning as revoke_role().
         """
         role = await self.role_repository.get_by_id(role_id)
         if role is None:
             raise RoleNotFoundError(f"Role not found: {role_id}")
 
-        return await self.role_repository.remove_permission(role_id, permission_id)
+        removed = await self.role_repository.remove_permission(role_id, permission_id)
+
+        if removed:
+            await self.audit_log_repository.record(
+                action=audit_actions.PERMISSION_REMOVED_FROM_ROLE,
+                actor_user_id=actor_user_id,
+                target_type="role",
+                target_id=role_id,
+                organization_id=role.organization_id,
+                event_metadata={"permission_id": str(permission_id)},
+            )
+
+        return removed
 
     async def get_user_permissions(
         self, user_id: uuid.UUID, organization_id: uuid.UUID | None = None
@@ -295,7 +389,11 @@ class AuthorizationService:
         given. A user with no roles (or an unknown user_id) resolves to an
         empty list, not an error -- mirrors UserRoleRepository.
         get_permissions_for_user()'s own contract, which this simply
-        delegates to and reshapes."""
+        delegates to and reshapes.
+
+        Not audited, for the same reason as authorize(): a pure, frequent
+        read, not a state change.
+        """
         permissions = await self.user_role_repository.get_permissions_for_user(
             user_id, organization_id=organization_id
         )

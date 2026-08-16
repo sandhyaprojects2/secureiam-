@@ -68,7 +68,7 @@ async def authorize(
 @router.post("/roles", response_model=RoleResponse, status_code=status.HTTP_201_CREATED)
 async def create_role(
     request: CreateRoleRequest,
-    _: User = Depends(require_permission("role", "manage")),
+    admin: User = Depends(require_permission("role", "manage")),
     service: AuthorizationService = Depends(get_authorization_service),
 ) -> RoleResponse:
     try:
@@ -76,6 +76,7 @@ async def create_role(
             name=request.name,
             description=request.description,
             organization_id=request.organization_id,
+            actor_user_id=admin.id,
         )
     except OrganizationNotFoundError:
         raise HTTPException(
@@ -97,11 +98,13 @@ async def create_role(
 async def assign_permission_to_role(
     role_id: uuid.UUID,
     request: AssignPermissionRequest,
-    _: User = Depends(require_permission("role", "manage")),
+    admin: User = Depends(require_permission("role", "manage")),
     service: AuthorizationService = Depends(get_authorization_service),
 ) -> Response:
     try:
-        await service.assign_permission_to_role(role_id, request.permission_id)
+        await service.assign_permission_to_role(
+            role_id, request.permission_id, actor_user_id=admin.id
+        )
     except RoleNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found.")
     except PermissionNotFoundError:
@@ -124,7 +127,7 @@ async def assign_permission_to_role(
 async def remove_permission_from_role(
     role_id: uuid.UUID,
     permission_id: uuid.UUID,
-    _: User = Depends(require_permission("role", "manage")),
+    admin: User = Depends(require_permission("role", "manage")),
     service: AuthorizationService = Depends(get_authorization_service),
 ) -> Response:
     # No branch on the returned bool: removing a permission the role never
@@ -132,7 +135,9 @@ async def remove_permission_from_role(
     # AuthorizationService.remove_permission_from_role()'s own idempotent
     # contract. Only an unknown role_id is a 404.
     try:
-        await service.remove_permission_from_role(role_id, permission_id)
+        await service.remove_permission_from_role(
+            role_id, permission_id, actor_user_id=admin.id
+        )
     except RoleNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found.")
 
@@ -161,11 +166,16 @@ async def get_my_permissions(
 async def assign_role_to_user(
     user_id: uuid.UUID,
     request: AssignRoleRequest,
-    _: User = Depends(require_permission("user", "manage")),
+    admin: User = Depends(require_permission("user", "manage")),
     service: AuthorizationService = Depends(get_authorization_service),
 ) -> Response:
     try:
-        await service.assign_role(user_id, request.role_id, organization_id=request.organization_id)
+        await service.assign_role(
+            user_id,
+            request.role_id,
+            organization_id=request.organization_id,
+            actor_user_id=admin.id,
+        )
     except RoleNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found.")
     except OrganizationNotFoundError:
@@ -199,13 +209,15 @@ async def revoke_role_from_user(
     user_id: uuid.UUID,
     role_id: uuid.UUID,
     organization_id: uuid.UUID | None = Query(default=None),
-    _: User = Depends(require_permission("user", "manage")),
+    admin: User = Depends(require_permission("user", "manage")),
     service: AuthorizationService = Depends(get_authorization_service),
 ) -> Response:
     # Same idempotent shape as remove_permission_from_role() above: revoking
     # a role the user never had (in the given organization scope) is a
     # no-op, not a 404.
-    await service.revoke_role(user_id, role_id, organization_id=organization_id)
+    await service.revoke_role(
+        user_id, role_id, organization_id=organization_id, actor_user_id=admin.id
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
