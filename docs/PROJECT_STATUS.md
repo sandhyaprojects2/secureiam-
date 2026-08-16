@@ -544,6 +544,33 @@ a correctly-derived one.
 Full writeup: `docs/phases/phase-4.4.md`, "Checkpoint Closure — CI
 PostgreSQL Credential Mismatch (Fixed)".
 
+### A second, separate, pre-existing flake observed while verifying the fix
+
+Confirming the fix in real CI required two pushes (the `master` branch and
+the `phase-4.4-complete` tag, from the same commit). Both runs show
+`test_migrations_apply_cleanly_to_a_fresh_empty_database` **passing** —
+the fix is confirmed working — and the tag's run was fully green
+(377/377). The `master` push's run, however, separately failed one
+different test:
+`test_refresh_edge_cases.py::test_concurrent_refresh_with_same_token_only_one_succeeds`
+(`assert 2 == 1` — both concurrent refresh requests succeeded instead of
+exactly one).
+
+This is **not a regression from this fix, and not new** — it is the exact
+"Known concurrency limitation" `docs/security-review.md` has documented
+since Phase 1: refresh rotation has no row-level locking or atomic
+conditional update, the test itself is documented as "a sanity check, not
+a proof," and closing this gap is explicitly named as **Phase 7 scope**
+(§4). The same commit passing cleanly in one CI run and flaking in
+another, purely on request-timing variance, is itself confirmation that
+this is a real, non-deterministic timing gap, not a deterministic bug —
+consistent with what Phase 1's own docs already predicted. It has **not**
+been fixed here: doing so would mean changing established refresh-token
+rotation/locking behavior, which §9's safety rule reserves for an
+explicit, approved decision — not something to fold into a checkpoint
+closure about an unrelated CI credential mismatch. Recorded here as
+corroborating evidence for the existing Phase 7 item, not a new problem.
+
 ### Test database setup
 - **Dev:** `docker-compose.yml` → Postgres on `5432` (`secureiam`/
   `secureiam`/`secureiam`).
