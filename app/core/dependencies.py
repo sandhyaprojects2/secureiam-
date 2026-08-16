@@ -4,8 +4,10 @@ FastAPI dependency-injection functions.
 get_auth_service() wires AuthService to real repositories and a real
 per-request database session -- this is the only place AuthService gets
 constructed with concrete dependencies; nothing else in the codebase should
-instantiate it directly. get_authorization_service() does the equivalent
-for AuthorizationService (Phase 2.3/2.4).
+instantiate it directly. get_authorization_service(), get_organization_
+service(), and get_audit_log_service() do the equivalent for
+AuthorizationService (Phase 2.3/2.4), OrganizationService (Phase 3.3), and
+AuditLogService (Phase 4.4).
 
 get_current_user() extracts and validates the caller's identity from the
 Authorization header -- it answers "who is this." require_permission()
@@ -24,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import TokenValidationError, decode_access_token
 from app.db.session import get_db
 from app.domain.models import User
+from app.domain.services.audit_log_service import AuditLogService
 from app.domain.services.auth_service import AuthService
 from app.domain.services.authorization_service import AuthorizationService
 from app.domain.services.organization_service import OrganizationService
@@ -145,6 +148,17 @@ async def get_organization_service(
         user_repository=UserRepository(session),
         audit_log_repository=AuditLogRepository(session),
     )
+
+
+async def get_audit_log_service(
+    session: AsyncSession = Depends(get_db),
+) -> AuditLogService:
+    """Constructs AuditLogService wired to a real AuditLogRepository sharing
+    the per-request database session -- same shape as get_auth_service(),
+    get_authorization_service(), and get_organization_service(), just with
+    a single repository, since this service has nothing else to
+    coordinate."""
+    return AuditLogService(audit_log_repository=AuditLogRepository(session))
 
 
 def require_permission(resource: str, action: str):

@@ -10,10 +10,12 @@ a change that breaks the dependency chain silently (still returns
 """
 
 from app.core.dependencies import (
+    get_audit_log_service,
     get_auth_service,
     get_authorization_service,
     get_organization_service,
 )
+from app.domain.services.audit_log_service import AuditLogService
 from app.domain.services.auth_service import AuthService
 from app.domain.services.authorization_service import AuthorizationService
 from app.domain.services.organization_service import OrganizationService
@@ -93,4 +95,17 @@ async def test_get_organization_service_repositories_share_the_same_session(test
     assert service.organization_repository.session is test_session
     assert service.organization_membership_repository.session is test_session
     assert service.user_repository.session is test_session
+    assert service.audit_log_repository.session is test_session
+
+
+async def test_get_audit_log_service_returns_correctly_wired_instance(test_session):
+    service = await get_audit_log_service(session=test_session)
+
+    assert isinstance(service, AuditLogService)
+    assert isinstance(service.audit_log_repository, AuditLogRepository)
+
+
+async def test_get_audit_log_service_repository_shares_the_same_session(test_session):
+    service = await get_audit_log_service(session=test_session)
+
     assert service.audit_log_repository.session is test_session
