@@ -86,16 +86,74 @@ HTTP.
 - **2 tests** added to `test_app_startup.py`, **2 tests** added to
   `test_dependency_wiring.py` for route/DI wiring.
 
-Full suite after this phase: **377 tests collected, 376 passing** (356
-before this phase's work + 21 new/updated). The one non-passing test
-(`test_migrations_apply_cleanly_to_a_fresh_empty_database`) is the same
-pre-existing environment limitation carried since Phase 2.3, unchanged by
-this phase — it hardcodes port `5432` (the dev `docker-compose.yml`
-Postgres), which isn't running in this environment (only the
-`docker-compose.test.yml` instance on `5433` is). Its updated assertions
-(7 permissions, 14 mappings on a fresh install) were independently
-verified against the available `5433` test database, the same way Phase
-3.4 verified its own fresh-install assertions.
+Full suite after this phase's original commit: **377 tests collected, 376
+passing** (356 before this phase's work + 21 new/updated). The one
+non-passing test (`test_migrations_apply_cleanly_to_a_fresh_empty_database`)
+was, at that point, still described as the "pre-existing environment
+limitation carried since Phase 2.3" every prior phase doc used — **that
+description was subsequently found to be incomplete and is corrected in
+"Checkpoint Closure" below.** Its updated assertions (7 permissions, 14
+mappings on a fresh install) were independently verified against the
+available `5433` test database at the time, the same way Phase 3.4
+verified its own fresh-install assertions — that verification's
+conclusions (7/14) were correct; only the *framing* of the one failing
+test was wrong.
+
+## Checkpoint Closure — CI PostgreSQL Credential Mismatch (Fixed)
+
+Before this phase's checkpoint was considered closed, the "pre-existing
+environment limitation" framing above (inherited, unchanged, from every
+phase doc since 2.3) was checked directly against real CI runs rather
+than taken on faith — and found to be **only half true**.
+
+**Actual root cause:** `test_fresh_database_migration.py` hardcoded a
+*separate* admin DSN, `postgres:postgres@localhost:5432`, distinct from
+`TEST_DATABASE_URL` (the connection every other integration test in this
+suite already uses). This DSN never matched any environment this project
+actually runs in:
+- **Locally:** nothing listens on port 5432 in this sandbox at all (only
+  the `docker-compose.test.yml` instance on 5433 is running) → connection
+  refused. This half of the old framing was accurate.
+- **In real GitHub Actions CI:** a Postgres service container *does* run
+  on 5432 — but `.github/workflows/test.yml` provisions it with
+  `secureiam`/`secureiam` credentials (matching `DATABASE_URL`/
+  `TEST_DATABASE_URL`, both already set to the same value in that
+  workflow), never `postgres`/`postgres`. Confirmed directly via
+  `gh run view` on the last-pushed run before this fix (Phase 4.3, run
+  `31924460699`): `asyncpg.exceptions.InvalidPasswordError: password
+  authentication failed for user "postgres"`. **This means CI had been
+  failing on every single push since `phase-2.3-complete`** — a real,
+  reproducible bug, not an inert local-only gap.
+
+**Fix applied:** the test no longer hardcodes any admin identity. It
+derives its admin connection from `TEST_DATABASE_URL` itself (imported
+directly from `tests/conftest.py` — one source of truth, not a
+duplicated default string), pointed at the target server's
+always-present `postgres` maintenance database instead of the app's own
+database. The `POSTGRES_USER` every `docker-compose.yml`/
+`docker-compose.test.yml`/CI service creates is a superuser by
+construction (that's how Postgres's own Docker image bootstraps it), so
+it always has `CREATEDB` privilege and a connection to `postgres` always
+exists — there was never a need for a *different* identity here, only a
+correct one.
+
+**Why this fix, and not an alternative:** the workflow's existing
+`secureiam`/`secureiam` credentials (already used consistently for both
+`DATABASE_URL` and `TEST_DATABASE_URL` in `test.yml`) were left
+untouched — changing them to match the test's old hardcoded value would
+have meant editing working CI configuration to accommodate a test bug,
+duplicating credentials across two places instead of one. Making the
+test read the already-existing `TEST_DATABASE_URL` is the same pattern
+every other integration test in this suite already follows; it introduces
+zero new environment variables and does not touch any security
+assumption (this is test infrastructure only — no application code,
+authentication, or authorization logic was changed).
+
+**Result:** the test now runs — and passes — against the same server the
+rest of the suite already targets, in both environments. Full suite after
+this fix: **377 collected, 377 passing** locally, zero failures. See
+`docs/PROJECT_STATUS.md` for the corresponding, corrected testing-status
+entry and confirmation of the equivalent CI run.
 
 ## Important Architectural / Security Decisions
 
