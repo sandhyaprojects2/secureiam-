@@ -264,9 +264,10 @@ async def test_seed_migration_created_expected_permission_catalog(test_session):
 
 async def test_seed_migration_admin_role_has_all_permissions(test_session):
     """"All permissions" as of the latest seed migration that grants any to
-    Admin -- Phase 3.4 added organization:manage (see
-    97122fa13dcc_seed_organization_manage_permission.py) on top of the
-    original five from this migration."""
+    Admin -- Phase 3.4 added organization:manage and Phase 4.4 added
+    audit:view (see 97122fa13dcc_seed_organization_manage_permission.py and
+    cbf5b83aa3f8_seed_audit_view_permission.py) on top of the original five
+    from this migration."""
     result = await test_session.execute(
         select(Permission.resource, Permission.action)
         .join(role_permissions, role_permissions.c.permission_id == Permission.id)
@@ -281,6 +282,7 @@ async def test_seed_migration_admin_role_has_all_permissions(test_session):
         ("role", "manage"),
         ("user", "manage"),
         ("organization", "manage"),
+        ("audit", "view"),
     }
 
 
@@ -303,6 +305,19 @@ async def test_seed_migration_organization_manage_permission_granted_only_to_adm
         .join(role_permissions, role_permissions.c.role_id == Role.id)
         .join(Permission, Permission.id == role_permissions.c.permission_id)
         .where(Permission.resource == "organization", Permission.action == "manage")
+    )
+    granted_to = {row[0] for row in result.fetchall()}
+    assert granted_to == {"Admin"}
+
+
+async def test_seed_migration_audit_view_permission_granted_only_to_admin(test_session):
+    """Phase 4.4 addition (cbf5b83aa3f8): audit:view exists and is granted
+    to Admin only, not any of the other three default roles."""
+    result = await test_session.execute(
+        select(Role.name)
+        .join(role_permissions, role_permissions.c.role_id == Role.id)
+        .join(Permission, Permission.id == role_permissions.c.permission_id)
+        .where(Permission.resource == "audit", Permission.action == "view")
     )
     granted_to = {row[0] for row in result.fetchall()}
     assert granted_to == {"Admin"}

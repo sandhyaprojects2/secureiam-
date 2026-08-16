@@ -144,3 +144,15 @@ def test_organization_mutation_routes_return_204_status_code_configured():
         and "DELETE" in getattr(r, "methods", set())
     )
     assert remove_member_route.status_code == 204
+
+
+def test_audit_log_route_is_registered():
+    route_paths = {route.path for route in app.routes}
+    assert "/v1/audit-logs" in route_paths
+
+
+def test_audit_log_route_only_accepts_get():
+    route = next(r for r in app.routes if r.path == "/v1/audit-logs")
+    assert "GET" in route.methods
+    assert "POST" not in route.methods
+    assert "DELETE" not in route.methods
